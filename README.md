@@ -20,9 +20,9 @@
 
 ```mermaid
 flowchart LR
-    A[📝 自分のタスクを Issue に登録] --> B[📊 Kanban で進行を管理]
-    B --> C[💬 Commit メッセージに Issue を参照 (#番号)]
-    C --> D[🚀 コードレビュー・マージ！]
+    A[📝自分のタスクをIssueに登録] --> B[📊Kanbanで進行を管理]
+    B --> C[💬CommitメッセージにIssueを参照(#番号)]
+    C --> D[🚀コードレビュー・マージ！]
 ```
 
 ## 🗂️推奨フォルダ構成
