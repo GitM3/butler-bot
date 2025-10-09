@@ -20,7 +20,10 @@ in
     QT_QPA_PLATFORM = "wayland;xcb";
   };
   languages = {
-    python.enable = true;
+    python = {
+      enable = true;
+      venv.enable = true;
+    };
     cplusplus.enable = true;
     c.enable = true;
   };
@@ -32,12 +35,16 @@ in
         pillow
         timm
         requests
+        pip
+        virtualenv
         matplotlib
         torch
         torchvision
         (opencv4.override { enableGtk2 = true; })
       ]
     ))
+    pyenv
+
     # ---- multimedia stack (libs) ----
     opencv # provides the native libs OpenCV wants
     ffmpeg
@@ -68,4 +75,8 @@ in
 
     #pkgs-unstable.claude-code
   ];
+  # scripts."install-detr".exec = ''
+  #   2. pip install "rfdetr @ git+https://github.com/roboflow/rf-detr.git@fix_nontype_in_optimize_call"
+
+  # '';
 }

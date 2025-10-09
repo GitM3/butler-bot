@@ -17,6 +17,10 @@ luac.out
 *.gch
 *.pch
 
+# Saved models
+*.pth
+*.pt
+
 # Libraries
 *.lib
 *.a
