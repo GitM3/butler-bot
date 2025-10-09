@@ -18,13 +18,12 @@
 
 ## 🧭 開発フロー
 
-```mermaid
-flowchart LR
-    A["📝 タスクを Issue に登録"] --> B["📊 Kanban で進行を管理"]
-    B --> C["💬 Commit メッセージで Issue 番号を参照 (#123 など)"]
-    C --> D["🚀 コードレビューとマージ"]
-```
+    1) 📝 タスクを Issue に登録
+    2) 📊 Kanban で進行を管理
+    3) 💬 Commit メッセージで Issue 番号を参照 (#123 など)
+    4) 🚀 コードレビューとマージ
 
+````
 ## 🗂️推奨フォルダ構成
 
 ```bash
@@ -39,7 +38,7 @@ butler-bot/
     ├── vision/
     ├── control/
     └── communication/
-```
+````
 
 🧠 コミットメッセージ例
 
