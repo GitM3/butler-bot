@@ -1,6 +1,6 @@
 # Overview
 
-```mermaidjs
+```mermaid
 ---
 config:
       theme: redux
