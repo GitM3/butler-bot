@@ -3,11 +3,11 @@
     let
       version = "1.8.2";
 system = "x86_64-linux";
-devenv_root = "/home/zander/Development/python/bottleButler";
-devenv_dotfile = "/home/zander/Development/python/bottleButler/.devenv";
+devenv_root = "/home/zander/Development/butler-bot/members/zander/detect_test";
+devenv_dotfile = "/home/zander/Development/butler-bot/members/zander/detect_test/.devenv";
 devenv_dotfile_path = ./.devenv;
 devenv_tmpdir = "/run/user/1000";
-devenv_runtime = "/run/user/1000/devenv-02911c8";
+devenv_runtime = "/run/user/1000/devenv-03c2122";
 devenv_istesting = false;
 devenv_direnvrc_latest_version = 1;
 container_name = null;
@@ -26,11 +26,11 @@ container_name = null;
         let
           version = "1.8.2";
 system = "x86_64-linux";
-devenv_root = "/home/zander/Development/python/bottleButler";
-devenv_dotfile = "/home/zander/Development/python/bottleButler/.devenv";
+devenv_root = "/home/zander/Development/butler-bot/members/zander/detect_test";
+devenv_dotfile = "/home/zander/Development/butler-bot/members/zander/detect_test/.devenv";
 devenv_dotfile_path = ./.devenv;
 devenv_tmpdir = "/run/user/1000";
-devenv_runtime = "/run/user/1000/devenv-02911c8";
+devenv_runtime = "/run/user/1000/devenv-03c2122";
 devenv_istesting = false;
 devenv_direnvrc_latest_version = 1;
 container_name = null;
