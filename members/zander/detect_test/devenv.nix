@@ -19,10 +19,18 @@ in
     GDK_BACKEND = "wayland,x11";
     QT_QPA_PLATFORM = "wayland;xcb";
   };
+
   languages = {
     python = {
       enable = true;
       venv.enable = true;
+      venv.requirements = ''
+        pip
+        opencv-python
+        trackers
+        roboflow==1.2.10
+        idna==3.7
+      '';
     };
     cplusplus.enable = true;
     c.enable = true;
@@ -38,7 +46,7 @@ in
         pip
         virtualenv
         matplotlib
-        torch
+        #torch-bin
         torchvision
         (opencv4.override { enableGtk2 = true; })
       ]

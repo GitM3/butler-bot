@@ -1,0 +1,12 @@
+inputs:
+  mk-shell-bin:
+    url: github:rrbutani/nix-mk-shell-bin
+  nix-ros-overlay:
+    url: github:lopsided98/nix-ros-overlay/master # Or 'develop' for bleeding edge
+  nixgl:
+    url: github:nix-community/nixGL
+  nixpkgs:
+    follows: nix-ros-overlay/nixpkgs
+  nixpkgs-unstable:
+    url: github:NixOS/nixpkgs/nixos-unstable
+allowUnfree: true
