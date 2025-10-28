@@ -1,0 +1,6 @@
+source;share/py_detr/hook/pythonpath.dsv
+source;share/py_detr/hook/pythonpath.sh
+source;share/py_detr/hook/ament_prefix_path.dsv
+source;share/py_detr/hook/ament_prefix_path.sh
+source;../../build/py_detr/share/py_detr/hook/pythonpath_develop.dsv
+source;../../build/py_detr/share/py_detr/hook/pythonpath_develop.sh

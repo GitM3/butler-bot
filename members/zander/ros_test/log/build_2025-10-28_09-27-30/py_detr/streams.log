@@ -1,0 +1,25 @@
+[1.718s] Invoking command in '/home/zander/Development/butler-bot/members/zander/ros_test/build/py_detr': PYTHONPATH=/home/zander/Development/butler-bot/members/zander/ros_test/build/py_detr/prefix_override:/nix/store/shl2bw77xxhfknarmi8dq6qkrxbp2jj9-python3.12-colcon-core-0.20.1/lib/python3.12/site-packages/colcon_core/task/python/colcon_distutils_commands:/home/zander/Development/butler-bot/members/zander/ros_test/install/py_detr/lib/python3.12/site-packages:${PYTHONPATH} _=/nix/store/yh6qg1nsi5h2xblcr67030pz58fsaxx3-coreutils-9.6/bin/env /nix/store/f2krmq3iv5nibcvn4rw7nrnrciqprdkh-python3-3.12.9/bin/python3.12 -W ignore:setup.py install is deprecated -W ignore:easy_install command is deprecated setup.py develop --editable --build-directory /home/zander/Development/butler-bot/members/zander/ros_test/build/py_detr/build --no-deps symlink_data
+[2.405s] running develop
+[2.783s] running egg_info
+[2.816s] creating py_detr.egg-info
+[2.816s] writing py_detr.egg-info/PKG-INFO
+[2.817s] writing dependency_links to py_detr.egg-info/dependency_links.txt
+[2.817s] writing entry points to py_detr.egg-info/entry_points.txt
+[2.817s] writing requirements to py_detr.egg-info/requires.txt
+[2.817s] writing top-level names to py_detr.egg-info/top_level.txt
+[2.818s] writing manifest file 'py_detr.egg-info/SOURCES.txt'
+[2.895s] reading manifest file 'py_detr.egg-info/SOURCES.txt'
+[2.896s] writing manifest file 'py_detr.egg-info/SOURCES.txt'
+[3.008s] running build_ext
+[3.009s] Creating /home/zander/Development/butler-bot/members/zander/ros_test/install/py_detr/lib/python3.12/site-packages/py-detr.egg-link (link to .)
+[3.010s] Installing rfdetr_node script to /home/zander/Development/butler-bot/members/zander/ros_test/install/py_detr/lib/py_detr
+[3.010s] Installing video_node script to /home/zander/Development/butler-bot/members/zander/ros_test/install/py_detr/lib/py_detr
+[3.011s] 
+[3.011s] Installed /home/zander/Development/butler-bot/members/zander/ros_test/build/py_detr
+[3.011s] running symlink_data
+[3.012s] creating /home/zander/Development/butler-bot/members/zander/ros_test/install/py_detr/share/ament_index/resource_index/packages
+[3.012s] symbolically linking /home/zander/Development/butler-bot/members/zander/ros_test/build/py_detr/resource/py_detr -> /home/zander/Development/butler-bot/members/zander/ros_test/install/py_detr/share/ament_index/resource_index/packages
+[3.012s] symbolically linking /home/zander/Development/butler-bot/members/zander/ros_test/build/py_detr/package.xml -> /home/zander/Development/butler-bot/members/zander/ros_test/install/py_detr/share/py_detr
+[3.012s] creating /home/zander/Development/butler-bot/members/zander/ros_test/install/py_detr/share/py_detr/launch
+[3.012s] symbolically linking /home/zander/Development/butler-bot/members/zander/ros_test/build/py_detr/launch/py_detr.launch.py -> /home/zander/Development/butler-bot/members/zander/ros_test/install/py_detr/share/py_detr/launch
+[3.102s] Invoked command in '/home/zander/Development/butler-bot/members/zander/ros_test/build/py_detr' returned '0': PYTHONPATH=/home/zander/Development/butler-bot/members/zander/ros_test/build/py_detr/prefix_override:/nix/store/shl2bw77xxhfknarmi8dq6qkrxbp2jj9-python3.12-colcon-core-0.20.1/lib/python3.12/site-packages/colcon_core/task/python/colcon_distutils_commands:/home/zander/Development/butler-bot/members/zander/ros_test/install/py_detr/lib/python3.12/site-packages:${PYTHONPATH} _=/nix/store/yh6qg1nsi5h2xblcr67030pz58fsaxx3-coreutils-9.6/bin/env /nix/store/f2krmq3iv5nibcvn4rw7nrnrciqprdkh-python3-3.12.9/bin/python3.12 -W ignore:setup.py install is deprecated -W ignore:easy_install command is deprecated setup.py develop --editable --build-directory /home/zander/Development/butler-bot/members/zander/ros_test/build/py_detr/build --no-deps symlink_data

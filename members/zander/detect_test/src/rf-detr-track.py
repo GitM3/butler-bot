@@ -22,7 +22,7 @@ SCORE_THR = 0.5
 CAM_INDEX = 0
 WINDOW_NAME = "RF-DETR + SORT Webcam"
 
-#torch.set_num_threads(10)
+torch.set_num_threads(1)
 warnings.filterwarnings("ignore", category=torch.jit.TracerWarning)
 
 def find_bottom_ellipse(frame, xyxy):

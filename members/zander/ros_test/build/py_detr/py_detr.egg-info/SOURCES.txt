@@ -1,0 +1,16 @@
+package.xml
+setup.cfg
+setup.py
+launch/py_detr.launch.py
+py_detr/__init__.py
+py_detr/rf_detr_node.py
+py_detr/tracker_node.py
+py_detr/video_node.py
+py_detr.egg-info/PKG-INFO
+py_detr.egg-info/SOURCES.txt
+py_detr.egg-info/dependency_links.txt
+py_detr.egg-info/entry_points.txt
+py_detr.egg-info/requires.txt
+py_detr.egg-info/top_level.txt
+py_detr.egg-info/zip-safe
+resource/py_detr

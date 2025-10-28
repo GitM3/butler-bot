@@ -1,0 +1,21 @@
+[0.428s] Invoking command in '/home/zander/Development/butler-bot/members/zander/ros_test/src/py_detr': PYTHONPATH=/home/zander/Development/butler-bot/members/zander/ros_test/src/build/py_detr/prefix_override:/nix/store/shl2bw77xxhfknarmi8dq6qkrxbp2jj9-python3.12-colcon-core-0.20.1/lib/python3.12/site-packages/colcon_core/task/python/colcon_distutils_commands:/home/zander/Development/butler-bot/members/zander/ros_test/src/install/py_detr/lib/python3.12/site-packages:${PYTHONPATH} _=/nix/store/yh6qg1nsi5h2xblcr67030pz58fsaxx3-coreutils-9.6/bin/env /nix/store/f2krmq3iv5nibcvn4rw7nrnrciqprdkh-python3-3.12.9/bin/python3.12 -W ignore:setup.py install is deprecated -W ignore:easy_install command is deprecated setup.py egg_info --egg-base ../build/py_detr build --build-base /home/zander/Development/butler-bot/members/zander/ros_test/src/build/py_detr/build install --record /home/zander/Development/butler-bot/members/zander/ros_test/src/build/py_detr/install.log --single-version-externally-managed install_data
+[0.590s] running egg_info
+[0.597s] writing ../build/py_detr/py_detr.egg-info/PKG-INFO
+[0.597s] writing dependency_links to ../build/py_detr/py_detr.egg-info/dependency_links.txt
+[0.597s] writing entry points to ../build/py_detr/py_detr.egg-info/entry_points.txt
+[0.598s] writing requirements to ../build/py_detr/py_detr.egg-info/requires.txt
+[0.598s] writing top-level names to ../build/py_detr/py_detr.egg-info/top_level.txt
+[0.615s] reading manifest file '../build/py_detr/py_detr.egg-info/SOURCES.txt'
+[0.616s] writing manifest file '../build/py_detr/py_detr.egg-info/SOURCES.txt'
+[0.616s] running build
+[0.616s] running build_py
+[0.616s] copying py_detr/camera_node.py -> /home/zander/Development/butler-bot/members/zander/ros_test/src/build/py_detr/build/lib/py_detr
+[0.616s] copying py_detr/__init__.py -> /home/zander/Development/butler-bot/members/zander/ros_test/src/build/py_detr/build/lib/py_detr
+[0.616s] copying py_detr/rf_detr_node.py -> /home/zander/Development/butler-bot/members/zander/ros_test/src/build/py_detr/build/lib/py_detr
+[0.616s] running install
+[0.621s] running install_lib
+[0.630s] running install_data
+[0.630s] copying resource/py_detr -> /home/zander/Development/butler-bot/members/zander/ros_test/src/install/py_detr/share/ament_index/resource_index/packages
+[0.630s] error: can't copy 'launch/py_detr.launch.p': doesn't exist or not a regular file
+[0.630s] copying package.xml -> /home/zander/Development/butler-bot/members/zander/ros_test/src/install/py_detr/share/py_detr
+[0.645s] Invoked command in '/home/zander/Development/butler-bot/members/zander/ros_test/src/py_detr' returned '1': PYTHONPATH=/home/zander/Development/butler-bot/members/zander/ros_test/src/build/py_detr/prefix_override:/nix/store/shl2bw77xxhfknarmi8dq6qkrxbp2jj9-python3.12-colcon-core-0.20.1/lib/python3.12/site-packages/colcon_core/task/python/colcon_distutils_commands:/home/zander/Development/butler-bot/members/zander/ros_test/src/install/py_detr/lib/python3.12/site-packages:${PYTHONPATH} _=/nix/store/yh6qg1nsi5h2xblcr67030pz58fsaxx3-coreutils-9.6/bin/env /nix/store/f2krmq3iv5nibcvn4rw7nrnrciqprdkh-python3-3.12.9/bin/python3.12 -W ignore:setup.py install is deprecated -W ignore:easy_install command is deprecated setup.py egg_info --egg-base ../build/py_detr build --build-base /home/zander/Development/butler-bot/members/zander/ros_test/src/build/py_detr/build install --record /home/zander/Development/butler-bot/members/zander/ros_test/src/build/py_detr/install.log --single-version-externally-managed install_data

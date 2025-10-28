@@ -1,0 +1,33 @@
+running egg_info
+writing ../build/py_detr/py_detr.egg-info/PKG-INFO
+writing dependency_links to ../build/py_detr/py_detr.egg-info/dependency_links.txt
+writing entry points to ../build/py_detr/py_detr.egg-info/entry_points.txt
+writing requirements to ../build/py_detr/py_detr.egg-info/requires.txt
+writing top-level names to ../build/py_detr/py_detr.egg-info/top_level.txt
+reading manifest file '../build/py_detr/py_detr.egg-info/SOURCES.txt'
+writing manifest file '../build/py_detr/py_detr.egg-info/SOURCES.txt'
+running build
+running build_py
+copying py_detr/video_node.py -> /home/zander/Development/butler-bot/members/zander/ros_test/src/build/py_detr/build/lib/py_detr
+copying py_detr/__init__.py -> /home/zander/Development/butler-bot/members/zander/ros_test/src/build/py_detr/build/lib/py_detr
+copying py_detr/tracker_node.py -> /home/zander/Development/butler-bot/members/zander/ros_test/src/build/py_detr/build/lib/py_detr
+copying py_detr/rf_detr_node.py -> /home/zander/Development/butler-bot/members/zander/ros_test/src/build/py_detr/build/lib/py_detr
+running install
+running install_lib
+copying /home/zander/Development/butler-bot/members/zander/ros_test/src/build/py_detr/build/lib/py_detr/video_node.py -> /home/zander/Development/butler-bot/members/zander/ros_test/src/install/py_detr/lib/python3.12/site-packages/py_detr
+copying /home/zander/Development/butler-bot/members/zander/ros_test/src/build/py_detr/build/lib/py_detr/tracker_node.py -> /home/zander/Development/butler-bot/members/zander/ros_test/src/install/py_detr/lib/python3.12/site-packages/py_detr
+copying /home/zander/Development/butler-bot/members/zander/ros_test/src/build/py_detr/build/lib/py_detr/rf_detr_node.py -> /home/zander/Development/butler-bot/members/zander/ros_test/src/install/py_detr/lib/python3.12/site-packages/py_detr
+byte-compiling /home/zander/Development/butler-bot/members/zander/ros_test/src/install/py_detr/lib/python3.12/site-packages/py_detr/video_node.py to video_node.cpython-312.pyc
+byte-compiling /home/zander/Development/butler-bot/members/zander/ros_test/src/install/py_detr/lib/python3.12/site-packages/py_detr/tracker_node.py to tracker_node.cpython-312.pyc
+byte-compiling /home/zander/Development/butler-bot/members/zander/ros_test/src/install/py_detr/lib/python3.12/site-packages/py_detr/rf_detr_node.py to rf_detr_node.cpython-312.pyc
+running install_data
+copying resource/py_detr -> /home/zander/Development/butler-bot/members/zander/ros_test/src/install/py_detr/share/ament_index/resource_index/packages
+copying package.xml -> /home/zander/Development/butler-bot/members/zander/ros_test/src/install/py_detr/share/py_detr
+copying launch/py_detr.launch.py -> /home/zander/Development/butler-bot/members/zander/ros_test/src/install/py_detr/share/py_detr/launch
+running install_egg_info
+removing '/home/zander/Development/butler-bot/members/zander/ros_test/src/install/py_detr/lib/python3.12/site-packages/py_detr-0.0.1-py3.12.egg-info' (and everything under it)
+Copying ../build/py_detr/py_detr.egg-info to /home/zander/Development/butler-bot/members/zander/ros_test/src/install/py_detr/lib/python3.12/site-packages/py_detr-0.0.1-py3.12.egg-info
+running install_scripts
+Installing rfdetr_node script to /home/zander/Development/butler-bot/members/zander/ros_test/src/install/py_detr/lib/py_detr
+Installing video_node script to /home/zander/Development/butler-bot/members/zander/ros_test/src/install/py_detr/lib/py_detr
+writing list of installed files to '/home/zander/Development/butler-bot/members/zander/ros_test/src/build/py_detr/install.log'

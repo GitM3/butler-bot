@@ -1,0 +1,31 @@
+running egg_info
+creating ../build/py_detr/py_detr.egg-info
+writing ../build/py_detr/py_detr.egg-info/PKG-INFO
+writing dependency_links to ../build/py_detr/py_detr.egg-info/dependency_links.txt
+writing entry points to ../build/py_detr/py_detr.egg-info/entry_points.txt
+writing requirements to ../build/py_detr/py_detr.egg-info/requires.txt
+writing top-level names to ../build/py_detr/py_detr.egg-info/top_level.txt
+writing manifest file '../build/py_detr/py_detr.egg-info/SOURCES.txt'
+reading manifest file '../build/py_detr/py_detr.egg-info/SOURCES.txt'
+writing manifest file '../build/py_detr/py_detr.egg-info/SOURCES.txt'
+running build
+running build_py
+creating /home/zander/Development/butler-bot/members/zander/ros_test/src/build/py_detr/build/lib/py_detr
+copying py_detr/camera_node.py -> /home/zander/Development/butler-bot/members/zander/ros_test/src/build/py_detr/build/lib/py_detr
+copying py_detr/__init__.py -> /home/zander/Development/butler-bot/members/zander/ros_test/src/build/py_detr/build/lib/py_detr
+copying py_detr/rf_detr_node.py -> /home/zander/Development/butler-bot/members/zander/ros_test/src/build/py_detr/build/lib/py_detr
+running install
+running install_lib
+creating /home/zander/Development/butler-bot/members/zander/ros_test/src/install/py_detr/lib/python3.12/site-packages/py_detr
+copying /home/zander/Development/butler-bot/members/zander/ros_test/src/build/py_detr/build/lib/py_detr/camera_node.py -> /home/zander/Development/butler-bot/members/zander/ros_test/src/install/py_detr/lib/python3.12/site-packages/py_detr
+copying /home/zander/Development/butler-bot/members/zander/ros_test/src/build/py_detr/build/lib/py_detr/__init__.py -> /home/zander/Development/butler-bot/members/zander/ros_test/src/install/py_detr/lib/python3.12/site-packages/py_detr
+copying /home/zander/Development/butler-bot/members/zander/ros_test/src/build/py_detr/build/lib/py_detr/rf_detr_node.py -> /home/zander/Development/butler-bot/members/zander/ros_test/src/install/py_detr/lib/python3.12/site-packages/py_detr
+byte-compiling /home/zander/Development/butler-bot/members/zander/ros_test/src/install/py_detr/lib/python3.12/site-packages/py_detr/camera_node.py to camera_node.cpython-312.pyc
+byte-compiling /home/zander/Development/butler-bot/members/zander/ros_test/src/install/py_detr/lib/python3.12/site-packages/py_detr/__init__.py to __init__.cpython-312.pyc
+byte-compiling /home/zander/Development/butler-bot/members/zander/ros_test/src/install/py_detr/lib/python3.12/site-packages/py_detr/rf_detr_node.py to rf_detr_node.cpython-312.pyc
+running install_data
+creating /home/zander/Development/butler-bot/members/zander/ros_test/src/install/py_detr/share/ament_index/resource_index/packages
+copying resource/py_detr -> /home/zander/Development/butler-bot/members/zander/ros_test/src/install/py_detr/share/ament_index/resource_index/packages
+copying package.xml -> /home/zander/Development/butler-bot/members/zander/ros_test/src/install/py_detr/share/py_detr
+error: can't copy 'launch/rfdetr.launch.py': doesn't exist or not a regular file
+creating /home/zander/Development/butler-bot/members/zander/ros_test/src/install/py_detr/share/py_detr/launch

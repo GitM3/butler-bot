@@ -24,15 +24,45 @@ let
 in
 {
   name = "bb_ros";
-  cachix.pull = [ "ros" ]; # Pull pre-built ROS packages
+  cachix = {
+    enable = true;
+    pull = [ "ros" ]; # Pull pre-built ROS packages
+  };
   overlays = [
     nix-ros-overlay.overlays.default
   ];
 
+  languages = {
+    python = {
+      enable = true;
+      #package = pkgs.python313;
+      venv.enable = true;
+      # Using pip/venv since ROS can use this instead of nix store.
+      venv.requirements = ''
+        pip
+        opencv-python
+        trackers
+        supervision==0.27.0rc1
+        roboflow==1.2.10
+        idna==3.7
+        numpy
+        transformers==4.57.0
+        pillow
+        timm
+        matplotlib
+        torchvision
+        torch==2.8.0
+        git+https://github.com/roboflow/rf-detr.git
+      '';
+    };
+    cplusplus.enable = true;
+    c.enable = true;
+  };
   # --- Packages ---
   packages =
     with pkgs;
     [
+      pkgs-unstable.codex
       colcon # The ROS 2 build tool
       graphviz # Often needed for ROS visualization tools
       cairo # Dependency for some GUI libraries
@@ -53,8 +83,8 @@ in
       v4l-utils # Video4Linux utilities for webcam access
 
       # --- Select ONE nixGL variant based on your GPU ---
-      nixGL.auto.nixGLDefault # Often works
-      # nixGL.nixGLIntel
+      # nixGL.auto.nixGLDefault # Often works
+      nixGL.nixGLIntel
       # nixGL.auto.nixGLNvidia
       # ... other variants
     ]
@@ -68,8 +98,6 @@ in
           ament-cmake-core
 
           rviz2 # For visualization
-          nav2-amcl # Navigation stack component
-          slam-toolbox # SLAM algorithms
           tf2-ros # Transform library
           tf2-tools # TF debugging tools
           rqt-graph
@@ -86,5 +114,8 @@ in
         ];
       })
     ]);
-
+  enterShell = ''
+    export PYTHONPATH=$PWD/install/py_detr/lib/python3.12/site-packages:$PYTHONPATH
+    export PYTHONPATH=$PWD/.devenv/state/venv/lib/python3.12/site-packages:$PYTHONPATH
+  '';
 }

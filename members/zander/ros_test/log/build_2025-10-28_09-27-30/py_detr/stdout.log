@@ -1,0 +1,23 @@
+running develop
+running egg_info
+creating py_detr.egg-info
+writing py_detr.egg-info/PKG-INFO
+writing dependency_links to py_detr.egg-info/dependency_links.txt
+writing entry points to py_detr.egg-info/entry_points.txt
+writing requirements to py_detr.egg-info/requires.txt
+writing top-level names to py_detr.egg-info/top_level.txt
+writing manifest file 'py_detr.egg-info/SOURCES.txt'
+reading manifest file 'py_detr.egg-info/SOURCES.txt'
+writing manifest file 'py_detr.egg-info/SOURCES.txt'
+running build_ext
+Creating /home/zander/Development/butler-bot/members/zander/ros_test/install/py_detr/lib/python3.12/site-packages/py-detr.egg-link (link to .)
+Installing rfdetr_node script to /home/zander/Development/butler-bot/members/zander/ros_test/install/py_detr/lib/py_detr
+Installing video_node script to /home/zander/Development/butler-bot/members/zander/ros_test/install/py_detr/lib/py_detr
+
+Installed /home/zander/Development/butler-bot/members/zander/ros_test/build/py_detr
+running symlink_data
+creating /home/zander/Development/butler-bot/members/zander/ros_test/install/py_detr/share/ament_index/resource_index/packages
+symbolically linking /home/zander/Development/butler-bot/members/zander/ros_test/build/py_detr/resource/py_detr -> /home/zander/Development/butler-bot/members/zander/ros_test/install/py_detr/share/ament_index/resource_index/packages
+symbolically linking /home/zander/Development/butler-bot/members/zander/ros_test/build/py_detr/package.xml -> /home/zander/Development/butler-bot/members/zander/ros_test/install/py_detr/share/py_detr
+creating /home/zander/Development/butler-bot/members/zander/ros_test/install/py_detr/share/py_detr/launch
+symbolically linking /home/zander/Development/butler-bot/members/zander/ros_test/build/py_detr/launch/py_detr.launch.py -> /home/zander/Development/butler-bot/members/zander/ros_test/install/py_detr/share/py_detr/launch

@@ -1,0 +1,7 @@
+setuptools
+supervision
+opencv-python
+torch
+
+[test]
+pytest
