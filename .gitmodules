@@ -1,0 +1,3 @@
+[submodule "members/shimpei"]
+	path = members/shimpei
+	url = git@github.com:shimpeisasaki/realsense_pitch.git
