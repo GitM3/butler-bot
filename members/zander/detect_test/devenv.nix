@@ -29,6 +29,12 @@ in
         opencv-python
         trackers
         roboflow==1.2.10
+        rfdetr
+        onnxruntime>1.17
+        onnx==1.19.0
+        onnxscript
+        onnxsim==0.4.36
+        pillow
         idna==3.7
       '';
     };
