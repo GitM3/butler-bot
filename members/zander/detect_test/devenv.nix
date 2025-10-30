@@ -36,6 +36,7 @@ in
         onnxsim==0.4.36
         pillow
         idna==3.7
+        huggingface_hub
       '';
     };
     cplusplus.enable = true;
