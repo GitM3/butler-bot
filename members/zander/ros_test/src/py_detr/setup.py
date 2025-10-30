@@ -32,6 +32,7 @@ setup(
         'console_scripts': [
             f"video_node = {package_name}.video_node:main",
             f"rfdetr_node = {package_name}.rf_detr_node:main",
+            f"tracker_node = {package_name}.tracker_node:main",
         ],
     },
 )
