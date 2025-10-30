@@ -56,3 +56,12 @@ luac.out
 result
 .ccls-cache
 .pre-commit-config.yaml
+__pycache__/
+**/__pycache__/
+
+build/
+install/
+log/
+**/build/
+**/install/
+**/log/
