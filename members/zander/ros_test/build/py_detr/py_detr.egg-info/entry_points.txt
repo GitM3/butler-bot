@@ -1,3 +1,0 @@
-[console_scripts]
-rfdetr_node = py_detr.rf_detr_node:main
-video_node = py_detr.video_node:main

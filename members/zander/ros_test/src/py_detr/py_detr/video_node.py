@@ -39,7 +39,7 @@ class VideoPublisher(Node):
             ret, frame = self.cap.read()
 
         if ret:
-            msg = self.bridge.cv2_to_imgmsg(frame, encoding="bgr8")
+            msg = self.bridge.cv2_to_imgmsg(frame, encoding="rgb8")
             self.publisher.publish(msg)
         else:
             self.get_logger().warn("Failed to read frame after looping")

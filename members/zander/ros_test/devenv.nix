@@ -47,9 +47,12 @@ in
         idna==3.7
         numpy
         transformers==4.57.0
-        pillow
         timm
         matplotlib
+        onnxruntime>1.17
+        onnx==1.19.0
+        onnxscript
+        onnxsim==0.4.36
         torchvision
         torch==2.8.0
         git+https://github.com/roboflow/rf-detr.git

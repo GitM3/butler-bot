@@ -55,6 +55,7 @@ class RFDETR_ONNX:
             # Get input shape
             input_info = self.ort_session.get_inputs()[0]
             self.input_height, self.input_width = input_info.shape[2:]
+            print(f"{self.input_height}, {self.input_width}")
         except Exception as e:
             raise RuntimeError(
                 f"Failed to load ONNX model from '{onnx_model_path}'. "
