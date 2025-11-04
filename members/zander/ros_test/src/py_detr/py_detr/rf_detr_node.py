@@ -8,9 +8,14 @@ import rclpy
 from cv_bridge import CvBridge
 from geometry_msgs.msg import Point
 from rclpy.node import Node
-from rfdetr.util.coco_classes import COCO_CLASSES
 from sensor_msgs.msg import Image
 
+# Check for updates: https://github.com/roboflow/rf-detr/blob/main/rfdetr/util/coco_classes.py
+COCO_CLASSES = {
+    44: "bottle",
+    46: "wine glass",
+    47: "cup",
+}
 
 def sigmoid(x):
     return 1 / (1 + np.exp(-x))
@@ -204,7 +209,7 @@ class RFDetrNode(Node):
         self.model_path = self.get_parameter("model_path").get_parameter_value().string_value
 
         self.bridge = CvBridge()
-        self.sub = self.create_subscription(Image, "/camera/image_raw",
+        self.sub = self.create_subscription(Image, "/camera/camera/color/image_raw",
                                             self.callback, 10)
         self.image_pub = self.create_publisher(Image, "/camera/annotated", 10)
         self.target_pub = self.create_publisher(Point, "/target/center", 10)
