@@ -35,7 +35,7 @@ class RFDETR_ONNX:
     def __init__(self, onnx_model_path):
         try:
             # Load the ONNX model and initialize the ONNX Runtime session
-            self.ort_session = ort.InferenceSession(onnx_model_path)
+            self.ort_session = ort.InferenceSession(onnx_model_path,providers=['CUDAExecutionProvider', 'CPUExecutionProvider'])
 
             # Get input shape
             input_info = self.ort_session.get_inputs()[0]
