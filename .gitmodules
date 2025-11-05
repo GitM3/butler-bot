@@ -1,3 +1,6 @@
-[submodule "members/shimpei"]
-	path = members/shimpei
+[submodule "members/zander/ros_test/src/dynamix"]
+	path = members/zander/ros_test/src/dynamix
+	url = https://github.com/shimpeisasaki/realsense_pitch.git
+[submodule "members/zander/ros_test/src/dynamix/realsense_pitch"]
+	path = members/zander/ros_test/src/dynamix/realsense_pitch
 	url = https://github.com/shimpeisasaki/realsense_pitch.git

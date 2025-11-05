@@ -151,55 +151,6 @@ class RFDETR_ONNX:
         outputs = self.ort_session.run(None, {self.input_name: input_image})
         return self._post_process(outputs, origin_h, origin_w, confidence_threshold, max_number_boxes, allowed_cids)
 
-    def save_detections(self, image_path, boxes, labels, masks, save_image_path):
-        """Draw bounding boxes, masks and class labels on the original image."""
-        
-        # Load base image
-        base = open_image(image_path).convert("RGBA")
-        result = base.copy()  # start with the base image
-
-        # Generate a color for each unique label (RGBA)
-        label_colors = {
-            label: (random.randint(0, 255),
-                    random.randint(0, 255),
-                    random.randint(0, 255),
-                    100)  # alpha for mask
-            for label in np.unique(labels)
-        }
-
-        # Loop over all masks
-        if masks is not None:
-            for i in range(masks.shape[0]):
-                label = labels[i]
-                color = label_colors[label]
-
-                # --- Draw mask ---
-                mask_overlay = Image.fromarray(masks[i]).convert("L")
-                mask_overlay = ImageOps.autocontrast(mask_overlay)
-                overlay_color = Image.new("RGBA", base.size, color)
-                overlay_masked = Image.new("RGBA", base.size)
-                overlay_masked.paste(overlay_color, (0, 0), mask_overlay)
-                result = Image.alpha_composite(result, overlay_masked)
-
-        # Convert to RGB for drawing boxes and text
-        result_rgb = result.convert("RGB")
-        draw = ImageDraw.Draw(result_rgb)
-        font = ImageFont.load_default()
-
-        # Loop over boxes and draw
-        for i, box in enumerate(boxes.astype(int)):
-            label = labels[i]
-            # Use same color as mask but fully opaque for the outline
-            box_color = tuple(label_colors[label][:3])  # ignore alpha
-            draw.rectangle(box.tolist(), outline=box_color, width=4)
-
-            # Draw label text
-            text_x = box[0] + 5
-            text_y = box[1] + 5
-            draw.text((text_x, text_y), str(label), fill=box_color, font=font)
-
-        # Save
-        result_rgb.save(save_image_path)
 
 class RFDetrNode(Node):
     def __init__(self):

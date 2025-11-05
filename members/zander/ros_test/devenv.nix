@@ -17,6 +17,7 @@ let
     enable32bits = isIntelX86Platform;
     enableIntelX86Extensions = isIntelX86Platform;
   };
+  localOverlay = import ./overlay.nix;
   pkgs-unstable = import nixpkgs-unstable {
     system = pkgs.system;
     config.allowUnfree = true;
@@ -30,6 +31,7 @@ in
   };
   overlays = [
     nix-ros-overlay.overlays.default
+    #localOverlay
   ];
 
   languages = {
@@ -56,6 +58,7 @@ in
         torchvision
         torch==2.8.0
         git+https://github.com/roboflow/rf-detr.git
+        lazyros
       '';
     };
     cplusplus.enable = true;
@@ -74,6 +77,7 @@ in
       cmake
       gcc
       pkg-config
+      onnxruntime
 
       # Computer Vision and Media Libraries
       opencv4
@@ -99,6 +103,7 @@ in
           # Core ROS libraries
           ros-core
           ament-cmake-core
+          python-cmake-module
 
           rviz2 # For visualization
           tf2-ros # Transform library
@@ -114,11 +119,21 @@ in
           rqt-image-view # For viewing camera feeds
           std-msgs
           rclpy
+          librealsense2
+          realsense2-camera
         ];
       })
     ]);
+
   enterShell = ''
     export PYTHONPATH=$PWD/install/py_detr/lib/python3.12/site-packages:$PYTHONPATH
     export PYTHONPATH=$PWD/.devenv/state/venv/lib/python3.12/site-packages:$PYTHONPATH
+    # export CMAKE_PREFIX_PATH=${pkgs.rosPackages.jazzy.cv-bridge}/share:$CMAKE_PREFIX_PATH
+
+    if [[ ! $DIRENV_IN_ENVRC ]]; then
+        eval "$(${pkgs.python3Packages.argcomplete}/bin/register-python-argcomplete ros2)"
+        eval "$(${pkgs.python3Packages.argcomplete}/bin/register-python-argcomplete colcon)"
+    fi
+
   '';
 }

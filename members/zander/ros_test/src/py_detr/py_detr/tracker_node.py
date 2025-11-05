@@ -1,8 +1,9 @@
 import time
 
 import rclpy
-from geometry_msgs.msg import Point, Twist
+from geometry_msgs.msg import Point
 from rclpy.node import Node
+from std_msgs.msg import Float64
 
 
 class PIDController:
@@ -36,72 +37,66 @@ class PIDController:
         return output
 
 
-class Tracker(Node):
+class PitchTracker(Node):
     def __init__(self):
-        super().__init__("tracker_node")
+        super().__init__("pitch_tracker")
 
-        # === Parameters ===
-        self.image_w = 320
-        self.image_h = 240
+        # Camera params
+        self.image_h = 480
+        self.alpha = 0.3  # smoothing
+
+        # Servo limits
+        self.pitch_min = 0.0
+        self.pitch_max = 90.0
+        self.pitch_angle = 0.0  # starting position
+
+        # PID for pitch
+        self.pid_pitch = PIDController(kp=0.02, ki=0.0, kd=0.0, output_limit=5.0)
+
+        # ROS interfaces
         self.target_sub = self.create_subscription(Point, "/target/center", self.callback, 10)
-        self.cmd_pub = self.create_publisher(Twist, "/cmd_vel", 10)
+        self.servo_pub = self.create_publisher(Float64, "/set_position", 10)
 
-        # PID for horizontal and vertical control
-        self.pid_x = PIDController(kp=0.005, ki=0.0, kd=0.001, output_limit=0.5)
-        self.pid_y = PIDController(kp=0.005, ki=0.0, kd=0.001, output_limit=0.5)
-
-        # EMA for smoothing the incoming detections
-        self.smooth_cx = None
         self.smooth_cy = None
-        self.alpha = 0.3  # smoothing factor
-
-        self.get_logger().info("✅ Tracker initialised")
+        self.get_logger().info("✅ Pitch tracker initialized")
 
     def callback(self, msg: Point):
         cx, cy, conf = msg.x, msg.y, msg.z
-        if conf < 0.4:  # skip low-confidence detections
+        if conf < 0.4:
             return
 
         # Smooth detection
-        if self.smooth_cx is None:
-            self.smooth_cx, self.smooth_cy = cx, cy
+        if self.smooth_cy is None:
+            self.smooth_cy = cy
         else:
-            self.smooth_cx = self.alpha * cx + (1 - self.alpha) * self.smooth_cx
             self.smooth_cy = self.alpha * cy + (1 - self.alpha) * self.smooth_cy
 
-        # Compute normalized error
-        error_x = (self.image_w / 2 - self.smooth_cx)
+        # Compute error (positive if target below center)
         error_y = (self.image_h / 2 - self.smooth_cy)
 
-        # Compute control
-        vx = self.pid_x.update(error_x)
-        vy = self.pid_y.update(error_y)
+        # Convert pixel error to angle correction
+        correction = self.pid_pitch.update(error_y)
 
-        # Publish Twist command (example for differential drive robot)
-        cmd = Twist()
-        cmd.angular.z = vx  # rotate to reduce horizontal error
-        cmd.linear.x = vy * -1  # move forward/backward to reduce vertical error
-        self.cmd_pub.publish(cmd)
+        # Update servo pitch
+        self.pitch_angle += correction
+        self.pitch_angle = max(min(self.pitch_angle, self.pitch_max), self.pitch_min)
+
+        # Publish new servo angle
+        msg_out = Float64()
+        msg_out.data = self.pitch_angle
+        self.servo_pub.publish(msg_out)
 
         self.get_logger().info(
-            f"Target ({cx:.0f},{cy:.0f}) err=({error_x:.0f},{error_y:.0f}) "
-            f"cmd=({vx:.3f},{vy:.3f})"
+            f"cy={cy:.1f}, err={error_y:.1f}, corr={correction:.2f}, pitch={self.pitch_angle:.1f}"
         )
-
-    def destroy_node(self):
-        super().destroy_node()
 
 
 def main(args=None):
     rclpy.init(args=args)
-    node = Tracker()
+    node = PitchTracker()
     try:
         rclpy.spin(node)
     except KeyboardInterrupt:
         pass
     node.destroy_node()
     rclpy.shutdown()
-
-
-if __name__ == "__main__":
-    main()
