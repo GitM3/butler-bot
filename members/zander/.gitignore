@@ -6,7 +6,7 @@ luac.out
 *.zip
 *.tar.gz
 *.onnx
-
+*.bag
 # Object files
 *.o
 *.os

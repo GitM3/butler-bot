@@ -121,6 +121,7 @@ in
           rclpy
           librealsense2
           realsense2-camera
+          foxglove-bridge
         ];
       })
     ]);

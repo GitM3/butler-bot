@@ -1,11 +1,1 @@
-from launch_ros.actions import Node
-
-from launch import LaunchDescription
-
-
-def generate_launch_description():
-    return LaunchDescription([
-        Node(package="py_detr", executable="video_node", name="video_node"),
-        Node(package="py_detr", executable="rfdetr_node", name="rfdetr_node"),
-    ])
-
+/home/zander/Development/butler-bot/members/zander/ros_test/src/build/py_detr/launch/py_detr.launch.py
