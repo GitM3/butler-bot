@@ -5,11 +5,13 @@ import argparse
 import cv2 as cv
 
 max_lowThreshold = 100
+max_highThreshold = 300
 window_name = 'Edge Map'
-title_trackbar = 'Min Threshold:'
 ratio = 3
 kernel_size = 3
 alpha = 1
+low_threshold = 10
+high_threshold = 30
 
 def find_bottom_ellipse(edges):
     contours, _ = cv.findContours(edges, cv.RETR_EXTERNAL, cv.CHAIN_APPROX_SIMPLE)
@@ -25,13 +27,22 @@ def find_bottom_ellipse(edges):
     return best_ellipse
 
 
-def AlphaThreshold(val):
-    alpha = val
-
-def CannyThreshold(val):
+def setLow(val):
+    global low_threshold
     low_threshold = val
+    CannyThreshold()
+
+def setHigh(val):
+    global high_threshold
+    high_threshold = val
+    CannyThreshold()
+
+def CannyThreshold():
+    global high_threshold
+    global low_threshold
+    print(f"Low, high: {low_threshold},{high_threshold}")
     img_blur = cv.blur(src_gray, (3,3))
-    detected_edges = cv.Canny(img_blur, low_threshold, low_threshold*ratio, kernel_size)
+    detected_edges = cv.Canny(img_blur, low_threshold, high_threshold, kernel_size)
     ellipse = find_bottom_ellipse(detected_edges)
     mask = detected_edges != 0
     dst = src * (mask[:,:,None].astype(src.dtype))
@@ -50,6 +61,10 @@ if src is None:
     exit(0)
 src_gray = cv.cvtColor(src, cv.COLOR_BGR2GRAY)
 cv.namedWindow(window_name)
-cv.createTrackbar(title_trackbar, window_name , 0, max_lowThreshold, CannyThreshold)
-CannyThreshold(0)
-cv.waitKey()
+cv.createTrackbar("Min Threshold", window_name , 0, max_lowThreshold, setLow)
+cv.createTrackbar("Max Threshold", window_name , 0, max_lowThreshold, setHigh)
+CannyThreshold()
+while True:
+
+    if cv.waitKey(1) & 0xFF == ord('q'):
+        break
