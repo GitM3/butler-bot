@@ -175,6 +175,7 @@ class RFDetrNode(Node):
         self.ts.registerCallback(self.callback)
 
         self.image_pub = self.create_publisher(Image, "/camera/annotated", 10)
+        self.debug_image_pub = self.create_publisher(Image, "/camera/annotated_debug", 10)
         self.target_pub = self.create_publisher(Float64MultiArray, "/target/center", 10)
 
         filter_labels = ["cup", "bottle", "wine glass"]
@@ -374,6 +375,12 @@ class RFDetrNode(Node):
         if tracked_ellipse_detection is not None:
             publish_detections.insert(0, tracked_ellipse_detection)
         self.publish_detections(publish_detections)
+    
+    def debug_pub_ellipses(ellipses, frame):
+        for e in ellipses:
+            cv2.ellipse(frame,e)
+        self.image_pub.publish(self.bridge.cv2_to_imgmsg(frame, "rgb8"))
+
 
     def detect_objects(self, frame, depth_array):
         """
