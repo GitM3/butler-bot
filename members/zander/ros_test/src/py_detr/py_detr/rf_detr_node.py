@@ -177,6 +177,10 @@ class RFDetrNode(Node):
         self.image_pub = self.create_publisher(Image, "/camera/annotated", 10)
         self.debug_image_pub = self.create_publisher(Image, "/camera/annotated_debug", 10)
         self.target_pub = self.create_publisher(Float64MultiArray, "/target/center", 10)
+        self.declare_parameter("enable_ellipse_debug_viz", True)
+        self.enable_ellipse_debug_viz = (
+            self.get_parameter("enable_ellipse_debug_viz").get_parameter_value().bool_value
+        )
 
         filter_labels = ["cup", "bottle", "wine glass"]
         self.target_labels = [i for i, n in COCO_CLASSES.items() if n in filter_labels]
@@ -376,12 +380,6 @@ class RFDetrNode(Node):
             publish_detections.insert(0, tracked_ellipse_detection)
         self.publish_detections(publish_detections)
     
-    def debug_pub_ellipses(ellipses, frame):
-        for e in ellipses:
-            cv2.ellipse(frame,e)
-        self.image_pub.publish(self.bridge.cv2_to_imgmsg(frame, "rgb8"))
-
-
     def detect_objects(self, frame, depth_array):
         """
         Run RF-DETR to obtain detections and enrich them with centers/depth.
@@ -448,6 +446,7 @@ class RFDetrNode(Node):
 
         roi_y1 = y1 + int(h * (1.0 - bottom_ratio))
         roi = frame[roi_y1:y2, x1:x2]
+        roi_debug = roi.copy() if self.enable_ellipse_debug_viz else None
 
         if roi.size == 0:
             return False, None, None, None
@@ -457,12 +456,13 @@ class RFDetrNode(Node):
         else:
             gray = roi.copy()
 
-        gray = cv2.GaussianBlur(gray, gaussian_size, 0)
-        edges = cv2.Canny(gray, canny_thresh1, canny_thresh2)
+        blurred = cv2.GaussianBlur(gray, gaussian_size, 0)
+        edges = cv2.Canny(blurred, canny_thresh1, canny_thresh2)
         contours, _ = cv2.findContours(edges, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
 
         best_ellipse = None
         best_area    = 0
+        candidate_ellipses = []
 
         for c in contours:
             if len(c) < 5:
@@ -480,9 +480,23 @@ class RFDetrNode(Node):
             if MA > w * 1.5 or ma > h * 1.5:
                 continue
 
+            candidate_ellipses.append({"ellipse": ellipse, "area": area})
             if area > best_area:
                 best_area = area
                 best_ellipse = ellipse
+
+        if self.enable_ellipse_debug_viz:
+            self._publish_ellipse_debug(
+                frame=frame,
+                roi=roi_debug,
+                blurred=blurred,
+                edges=edges,
+                candidate_ellipses=candidate_ellipses,
+                best_ellipse=best_ellipse,
+                bbox=(x1, y1, x2, y2),
+                roi_y1=roi_y1,
+                canny_thresh=(canny_thresh1, canny_thresh2),
+            )
 
         if best_ellipse is None:
             return False, None, None, None
@@ -496,6 +510,144 @@ class RFDetrNode(Node):
         ellipse_axes = (axis_a, axis_b)
 
         return True, world_cx, world_cy, (ellipse_center, ellipse_axes, angle)
+
+    def _publish_ellipse_debug(
+        self,
+        frame,
+        roi,
+        blurred,
+        edges,
+        candidate_ellipses,
+        best_ellipse,
+        bbox,
+        roi_y1,
+        canny_thresh,
+    ):
+        if not self.enable_ellipse_debug_viz or self.debug_image_pub is None:
+            return
+        if roi is None or roi.size == 0:
+            return
+
+        x1, y1, x2, y2 = bbox
+        font = cv2.FONT_HERSHEY_SIMPLEX
+
+        def _to_rgb(image):
+            if image is None:
+                return None
+            if len(image.shape) == 2:
+                return cv2.cvtColor(image, cv2.COLOR_GRAY2RGB)
+            return image.copy()
+
+        roi_color = _to_rgb(roi)
+        blurred_rgb = _to_rgb(blurred)
+        edges_rgb = _to_rgb(edges)
+        roi_candidates = roi_color.copy() if roi_color is not None else None
+        frame_overlay = frame.copy()
+        cv2.rectangle(frame_overlay, (x1, roi_y1), (x2, y2), (255, 0, 0), 1)
+
+        sorted_candidates = sorted(candidate_ellipses, key=lambda e: e["area"], reverse=True)
+        for idx, cand in enumerate(sorted_candidates):
+            ellipse = cand["ellipse"]
+            center_local = (int(round(ellipse[0][0])), int(round(ellipse[0][1])))
+            axes = (
+                max(1, int(round(ellipse[1][0] * 0.5))),
+                max(1, int(round(ellipse[1][1] * 0.5))),
+            )
+            color = (0, 255, 0) if best_ellipse is not None and ellipse == best_ellipse else (0, 215, 255)
+            thickness = 2 if best_ellipse is not None and ellipse == best_ellipse else 1
+            label = f"#{idx+1}"
+
+            if roi_candidates is not None:
+                cv2.ellipse(roi_candidates, center_local, axes, ellipse[2], 0, 360, color, thickness)
+                cv2.putText(
+                    roi_candidates,
+                    label,
+                    (center_local[0] + 4, center_local[1] - 4),
+                    font,
+                    0.4,
+                    color,
+                    1,
+                    cv2.LINE_AA,
+                )
+
+            world_center = (
+                int(round(x1 + center_local[0])),
+                int(round(roi_y1 + center_local[1])),
+            )
+            cv2.ellipse(frame_overlay, world_center, axes, ellipse[2], 0, 360, color, thickness)
+            cv2.putText(
+                frame_overlay,
+                label,
+                (world_center[0] + 4, world_center[1] - 4),
+                font,
+                0.4,
+                color,
+                1,
+                cv2.LINE_AA,
+            )
+
+        tiles = []
+        captions = []
+        if roi_color is not None:
+            tiles.append(roi_color)
+            captions.append("ROI (color)")
+        if blurred_rgb is not None:
+            tiles.append(blurred_rgb)
+            captions.append("Blurred gray")
+        if edges_rgb is not None:
+            tiles.append(edges_rgb)
+            captions.append(
+                f"Canny ({canny_thresh[0]}, {canny_thresh[1]})"
+            )
+        if roi_candidates is not None:
+            tiles.append(roi_candidates)
+            captions.append(
+                f"Candidates: {len(sorted_candidates)}"
+            )
+        tiles.append(frame_overlay)
+        captions.append("Frame overlay")
+
+        tile_w, tile_h = 320, 240
+        prepared_tiles = []
+        for img, caption in zip(tiles, captions):
+            resized = cv2.resize(img, (tile_w, tile_h), interpolation=cv2.INTER_AREA)
+            cv2.putText(
+                resized,
+                caption,
+                (8, 22),
+                font,
+                0.6,
+                (255, 255, 255),
+                1,
+                cv2.LINE_AA,
+            )
+            prepared_tiles.append(resized)
+
+        if not prepared_tiles:
+            return
+
+        cols = 3
+        rows = int(math.ceil(len(prepared_tiles) / cols))
+        blank_tile = np.zeros((tile_h, tile_w, 3), dtype=prepared_tiles[0].dtype)
+        mosaic_rows = []
+        tile_idx = 0
+        for _ in range(rows):
+            row_tiles = []
+            for _ in range(cols):
+                if tile_idx < len(prepared_tiles):
+                    row_tiles.append(prepared_tiles[tile_idx])
+                    tile_idx += 1
+                else:
+                    row_tiles.append(blank_tile.copy())
+            mosaic_rows.append(np.hstack(row_tiles))
+        debug_canvas = np.vstack(mosaic_rows)
+
+        try:
+            self.debug_image_pub.publish(
+                self.bridge.cv2_to_imgmsg(debug_canvas, "rgb8")
+            )
+        except Exception:
+            pass
 
     def _update_last_ellipse_bbox(self, frame_shape, ellipse_params):
         if ellipse_params is None:
