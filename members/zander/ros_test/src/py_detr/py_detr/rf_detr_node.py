@@ -228,6 +228,7 @@ class RFDetrNode(Node):
         self.depth_scale = (
             self.get_parameter("depth_scale").get_parameter_value().double_value
         )
+
         self.model = RFDETR_ONNX(self.model_path)
         self.get_logger().info("✅ RF-DETR ready")
         self.prev_t = time.time()
@@ -260,6 +261,8 @@ class RFDetrNode(Node):
         self.last_seen_ellipse_time = now
         self.depth_array = None
         self.depth_encoding = ""
+        self.prev_gray = None
+
 
     def callback(self, rgb_msg, depth_msg):
         frame = self.bridge.imgmsg_to_cv2(rgb_msg, "rgb8")
@@ -308,19 +311,17 @@ class RFDetrNode(Node):
         DETECT_LOST_THRESHOLD = 0.50
         ELLIPSE_LOST_THRESHOLD = 0.50
 
+        if object_detected:
+            self.last_seen_object_time = current_time
+            self.last_bbox = det_bbox
+
         if self.state == State.DETECT:
-            if object_detected:
-                self.last_seen_object_time = current_time
-                self.last_bbox = det_bbox
                 #self.get_logger().info(f"Object found at [{det_cx,det_cy,det_depth}]")
-                if det_depth is not None and det_depth < self.depth_threshold:
+                if object_detected and det_depth is not None and det_depth < self.depth_threshold:
                     self.state = State.ELLIPSE_SEARCH
                     self.get_logger().info("STATE → ELLIPSE_SEARCH")
         elif self.state == State.ELLIPSE_SEARCH:
             if object_detected:
-                self.last_seen_object_time = current_time
-                self.last_bbox = det_bbox
-
                 ellipse_found = False
                 e_cx = e_cy = None
                 ellipse_params = None
@@ -376,9 +377,9 @@ class RFDetrNode(Node):
 
         elif self.state == State.ELLIPSE_TRACK:
             if object_detected:
-                    self.state = State.ELLIPSE_SEARCH
+                    self.state = State.DETECT
                     self.last_ellipse_bbox = None
-                    self.get_logger().info("STATE → ELLIPSE_SEARCH")
+                    self.get_logger().info("STATE → DETECT")
 
             ellipse_found, e_cx, e_cy, ellipse_params = self.track_ellipse(frame)
             if ellipse_found:
@@ -795,69 +796,180 @@ class RFDetrNode(Node):
 
     def track_ellipse(self, frame):
         """
-        Constant-velocity ROI projection around last ellipse, with fallback.
+        KLT optical flow tracking for ellipse center with light RANSAC.
+        Falls back to depth-based ellipse detection if needed.
+        Returns: (found, cx, cy, ellipse_params)
         """
+
+        gray = cv2.cvtColor(frame, cv2.COLOR_RGB2GRAY)
         h, w = frame.shape[:2]
-        now = time.time()
 
-        # If we have a recent ellipse and bbox, project center forward
-        use_pred = self.last_ellipse_bbox is not None and self.ev_center is not None and self.ev_time is not None and (now - self.ev_time) <= self.track_max_age
-        if use_pred:
-            dt = max(0.0, now - self.ev_time)
-            proj = np.array(self.ev_center, dtype=float) + self.ev_vel * dt
-            # ROI size based on last ellipse bbox scaled and with margin
-            x1_l, y1_l, x2_l, y2_l = self.last_ellipse_bbox
-            bw = max(4, x2_l - x1_l)
-            bh = max(4, y2_l - y1_l)
-            scale = max(1.0, float(self.track_roi_scale))
-            margin = max(0.0, float(self.track_roi_margin_px))
-            roi_w = int(round(bw * scale + 2 * margin))
-            roi_h = int(round(bh * scale + 2 * margin))
-            cx = float(np.clip(proj[0], 0, w - 1))
-            cy = float(np.clip(proj[1], 0, h - 1))
-            rx1 = int(np.clip(round(cx - roi_w * 0.5), 0, w - 1))
-            ry1 = int(np.clip(round(cy - roi_h * 0.5), 0, h - 1))
-            rx2 = int(np.clip(round(cx + roi_w * 0.5), 0, w))
-            ry2 = int(np.clip(round(cy + roi_h * 0.5), 0, h))
-            # Debug annotate
-            self._dbg_track_mode = "predicted"
-            self._dbg_pred_roi = (rx1, ry1, rx2, ry2)
-            self._dbg_last_center = tuple(self.ev_center) if self.ev_center is not None else None
-            self._dbg_proj_center = (cx, cy)
-            self._dbg_velocity = tuple(self.ev_vel) if self.ev_vel is not None else None
-            if rx2 <= rx1 or ry2 <= ry1:
-                use_pred = False
-            else:
-                found, ecx, ecy, eparams = self.find_ellipse(frame, (rx1, ry1, rx2, ry2), bottom_ratio=1.0)
-                if found:
-                    return True, ecx, ecy, eparams
+        # ============================================================
+        # 1) TRY OPTICAL FLOW (KLT)
+        # ============================================================
+        klt_ready = (
+            getattr(self, "prev_gray", None) is not None and
+            getattr(self, "klt_points", None) is not None and
+            self.klt_points is not None and
+            len(self.klt_points) > 0
+        )
 
-        # Fallback: search around last bbox location (expanded)
-        if self.last_ellipse_bbox is not None:
+        if klt_ready:
+            try:
+                new_pts, status, err = cv2.calcOpticalFlowPyrLK(
+                    self.prev_gray, gray,
+                    self.klt_points, None,
+                    winSize=(21, 21),
+                    maxLevel=3,
+                    criteria=(cv2.TERM_CRITERIA_EPS | cv2.TERM_CRITERIA_COUNT, 30, 0.01)
+                )
+            except Exception:
+                new_pts, status = None, None
+
+            if (
+                new_pts is not None and
+                status is not None and
+                len(new_pts) > 0 and
+                len(status) > 0
+            ):
+                status = status.reshape(-1)
+                tracked = new_pts[status == 1]
+
+                # ----- SAFELY RESHAPE -----
+                tracked = np.asarray(tracked).reshape(-1, 2)
+                tracked = tracked[np.isfinite(tracked).all(axis=1)]
+
+                # ============================================================
+                # 1A) RANSAC FILTERING
+                # ============================================================
+                if tracked.shape[0] >= 5:
+                    # Fit center with RANSAC: find the densest region
+                    med = np.median(tracked, axis=0)  # initial center guess
+                    distances = np.linalg.norm(tracked - med, axis=1)
+
+                    # Threshold based on MAD (median abs deviation)
+                    mad = np.median(np.abs(distances - np.median(distances)))
+                    r_inlier = max(5.0, 2.5 * mad)  # radius threshold
+
+                    inliers = tracked[distances < r_inlier]
+
+                    if inliers.shape[0] >= 3:
+                        tracked = inliers
+
+                # If enough left after RANSAC, accept
+                if tracked.shape[0] >= 3:
+                    cx = int(np.median(tracked[:, 0]))
+                    cy = int(np.median(tracked[:, 1]))
+
+                    ax = max(6, int(np.std(tracked[:, 0]) * 1.5))
+                    ay = max(6, int(np.std(tracked[:, 1]) * 1.5))
+
+                    ellipse_params = ((cx, cy), (ax, ay), 0.0)
+
+                    # Update bbox
+                    self.last_ellipse_bbox = (
+                        max(0, cx - ax), max(0, cy - ay),
+                        min(w - 1, cx + ax), min(h - 1, cy + ay)
+                    )
+
+                    # Update KLT state
+                    self.klt_points = tracked.reshape(-1, 1, 2)
+                    self.prev_gray = gray
+                    return True, cx, cy, ellipse_params
+
+            # If KLT failed, reset it to allow fallback
+            self.klt_points = None
+            self.prev_gray = gray
+
+        # ============================================================
+        # 2) FALLBACK SEARCH (TIGHT AROUND LAST ELLIPSE)
+        # ============================================================
+        if getattr(self, "last_ellipse_bbox", None) is not None:
             x1, y1, x2, y2 = self.last_ellipse_bbox
-            bw = max(4, x2 - x1)
-            bh = max(4, y2 - y1)
-            scale = max(1.5, float(self.track_roi_scale))
-            margin = max(20.0, float(self.track_roi_margin_px))
-            cx = (x1 + x2) * 0.5
-            cy = (y1 + y2) * 0.5
-            roi_w = int(round(bw * scale + 2 * margin))
-            roi_h = int(round(bh * scale + 2 * margin))
-            rx1 = int(np.clip(round(cx - roi_w * 0.5), 0, w - 1))
-            ry1 = int(np.clip(round(cy - roi_h * 0.5), 0, h - 1))
-            rx2 = int(np.clip(round(cx + roi_w * 0.5), 0, w))
-            ry2 = int(np.clip(round(cy + roi_h * 0.5), 0, h))
-            self._dbg_track_mode = self._dbg_track_mode or "expanded"
-            self._dbg_fallback_roi = (rx1, ry1, rx2, ry2)
-            if rx2 > rx1 and ry2 > ry1:
-                found, ecx, ecy, eparams = self.find_ellipse(frame, (rx1, ry1, rx2, ry2), bottom_ratio=1.0)
-                if found:
-                    return True, ecx, ecy, eparams
+            cx = 0.5 * (x1 + x2)
+            cy = 0.5 * (y1 + y2)
 
-        # Last resort: brute-force whole frame
-        self._dbg_track_mode = self._dbg_track_mode or "full"
-        return self.find_ellipse(frame, (0, 0, w, h), bottom_ratio=1.0)
+            # Tight ROI
+            bw = max(10, x2 - x1)
+            bh = max(10, y2 - y1)
+            roi_w = int(bw * 1.3)
+            roi_h = int(bh * 1.3)
 
+            rx1 = int(np.clip(cx - roi_w / 2, 0, w - 1))
+            ry1 = int(np.clip(cy - roi_h / 2, 0, h - 1))
+            rx2 = int(np.clip(cx + roi_w / 2, 0, w))
+            ry2 = int(np.clip(cy + roi_h / 2, 0, h))
+
+            found, cx, cy, eparams = self.find_ellipse(
+                frame, (rx1, ry1, rx2, ry2), bottom_ratio=1.0
+            )
+            if found:
+                self._init_klt_points(gray, rx1, ry1, rx2, ry2)
+                return True, cx, cy, eparams
+
+        # ============================================================
+        # 3) FALLBACK #2 — EXPANDED ROI
+        # ============================================================
+        if getattr(self, "last_ellipse_bbox", None) is not None:
+            x1, y1, x2, y2 = self.last_ellipse_bbox
+            cx = 0.5 * (x1 + x2)
+            cy = 0.5 * (y1 + y2)
+
+            bw = max(10, x2 - x1)
+            bh = max(10, y2 - y1)
+            roi_w = int(bw * 2.0)
+            roi_h = int(bh * 2.0)
+
+            rx1 = int(np.clip(cx - roi_w / 2, 0, w - 1))
+            ry1 = int(np.clip(cy - roi_h / 2, 0, h - 1))
+            rx2 = int(np.clip(cx + roi_w / 2, 0, w))
+            ry2 = int(np.clip(cy + roi_h / 2, 0, h))
+
+            found, cx, cy, eparams = self.find_ellipse(
+                frame, (rx1, ry1, rx2, ry2), bottom_ratio=1.0
+            )
+            if found:
+                self._init_klt_points(gray, rx1, ry1, rx2, ry2)
+                return True, cx, cy, eparams
+
+        # ============================================================
+        # 4) FINAL FALLBACK — WHOLE FRAME
+        # ============================================================
+        found, cx, cy, eparams = self.find_ellipse(frame, (0, 0, w, h), bottom_ratio=1.0)
+        if found:
+            self._init_klt_points(gray, 0, 0, w, h)
+            return True, cx, cy, eparams
+
+        # Nothing found
+        self.klt_points = None
+        self.prev_gray = gray
+        return False, None, None, None
+
+    def _init_klt_points(self, gray, x1, y1, x2, y2):
+        roi = gray[y1:y2, x1:x2]
+        if roi.size == 0:
+            self.klt_points = None
+            return
+
+        # Detect up to 50 good features
+        pts = cv2.goodFeaturesToTrack(
+            roi,
+            maxCorners=50,
+            qualityLevel=0.01,
+            minDistance=5,
+            blockSize=7
+        )
+        if pts is None:
+            self.klt_points = None
+            return
+
+        # Shift from ROI coords to full-frame coords
+        pts[:, 0, 0] += x1
+        pts[:, 0, 1] += y1
+
+        self.klt_points = pts
+        self.prev_gray = gray
+    
     def _update_ellipse_motion(self, ellipse_params):
         try:
             center, _, _ = ellipse_params
