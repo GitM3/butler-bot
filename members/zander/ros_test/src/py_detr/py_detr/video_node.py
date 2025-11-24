@@ -3,6 +3,7 @@ from pathlib import Path
 
 import cv2
 import numpy as np
+import pyrealsense2 as rs
 import rclpy
 from cv_bridge import CvBridge
 from rclpy.node import Node
@@ -10,11 +11,6 @@ from rclpy.serialization import deserialize_message
 from rosbag2_py import ConverterOptions, SequentialReader, StorageOptions
 from rosidl_runtime_py.utilities import get_message
 from sensor_msgs.msg import Image
-
-try:
-    import pyrealsense2 as rs
-except ImportError:  # pragma: no cover - optional dependency
-    rs = None
 
 
 class VideoPublisher(Node):
@@ -78,7 +74,7 @@ class VideoPublisher(Node):
             if not self.cap.isOpened():
                 self.get_logger().error(f"Failed to open video file: {self.video_path}")
                 raise RuntimeError("Could not open video file")
-            self.publisher = self.create_publisher(Image, "/camera/camera/color/image_raw", 10)
+            self.publisher = self.create_publisher(Image, "camera/color/image_raw", 10)
             self.timer = self.create_timer(1.0 / self.frame_rate, self.publish_frame)
             self.get_logger().info(
                 f"Streaming video '{self.video_path}' at {self.frame_rate:.2f} Hz"
@@ -186,8 +182,8 @@ class VideoPublisher(Node):
         except RuntimeError:
             pass  # some firmware versions omit playback control
 
-        self.rs_color_pub = self.create_publisher(Image, "/camera/camera/color/image_raw", 10)
-        self.rs_depth_pub = self.create_publisher(Image, "/camera/depth/image_rect_raw", 10)
+        self.rs_color_pub = self.create_publisher(Image, "camera/color/image_raw", 10)
+        self.rs_depth_pub = self.create_publisher(Image, "camera/depth/image_rect_raw", 10)
 
     def _rewind_realsense_bag(self):
         if not self.rs_playback:

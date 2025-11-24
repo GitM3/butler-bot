@@ -165,8 +165,8 @@ class RFDetrNode(Node):
         self.model_path = self.get_parameter("model_path").get_parameter_value().string_value
 
         self.bridge = CvBridge()
-        self.rgb_sub   = Subscriber(self, Image, "/camera/camera/color/image_raw")
-        self.depth_sub = Subscriber(self, Image, "/camera/camera/depth/image_rect_raw")  
+        self.rgb_sub   = Subscriber(self, Image, "/camera/color/image_raw")
+        self.depth_sub = Subscriber(self, Image, "/camera/depth/image_rect_raw")  
         self.ts = ApproximateTimeSynchronizer(
             [self.rgb_sub, self.depth_sub],
             queue_size=10,
@@ -177,9 +177,33 @@ class RFDetrNode(Node):
         self.image_pub = self.create_publisher(Image, "/camera/annotated", 10)
         self.debug_image_pub = self.create_publisher(Image, "/camera/annotated_debug", 10)
         self.target_pub = self.create_publisher(Float64MultiArray, "/target/center", 10)
-        self.declare_parameter("enable_ellipse_debug_viz", True)
-        self.enable_ellipse_debug_viz = (
-            self.get_parameter("enable_ellipse_debug_viz").get_parameter_value().bool_value
+        self.enable_ellipse_debug_viz = True
+        self.default_ellipse_params = {
+            "bottom_ratio": 0.5,
+            "min_contour_area": 1000.0,
+            "canny_thresh1": 10.0,
+            "canny_thresh2": 80.0,
+            "gaussian_kernel": 5.0,
+            "max_axis_scale": 1.5,
+            "min_axis_length": 5.0,
+            "axis_ratio_min": 0.55,
+        }
+        self.ellipse_param_overrides = None
+        self.ellipse_param_name_order = [
+            "bottom_ratio",
+            "min_contour_area",
+            "canny_thresh1",
+            "canny_thresh2",
+            "gaussian_kernel",
+            "max_axis_scale",
+            "min_axis_length",
+            "axis_ratio_min",
+        ]
+        self.ellipse_debug_param_sub = self.create_subscription(
+            Float64MultiArray,
+            "/ellipse/params",
+            self._ellipse_debug_param_callback,
+            10,
         )
 
         filter_labels = ["cup", "bottle", "wine glass"]
@@ -211,6 +235,26 @@ class RFDetrNode(Node):
         self.depth_threshold = 2   # meters — adjust as needed
         self.last_bbox = None
         self.last_ellipse_bbox = None
+        # Simple constant-velocity tracking state (pixels/sec)
+        self.ev_center = None  # last ellipse center (x, y)
+        self.ev_vel = np.array([0.0, 0.0], dtype=float)
+        self.ev_time = None
+        # Debug annotations for tracking
+        self._dbg_track_mode = None
+        self._dbg_pred_roi = None
+        self._dbg_fallback_roi = None
+        self._dbg_last_center = None
+        self._dbg_proj_center = None
+        self._dbg_velocity = None
+        # Tracking tunables
+        self.declare_parameter("track_roi_scale", 2.0)  # scale of last ellipse bbox
+        self.declare_parameter("track_roi_margin_px", 40.0)  # extra pixels added to each side
+        self.declare_parameter("track_vel_alpha", 0.8)  # EMA for velocity smoothing
+        self.declare_parameter("track_max_age", 1.0)  # seconds; fall back if older
+        self.track_roi_scale = float(self.get_parameter("track_roi_scale").get_parameter_value().double_value)
+        self.track_roi_margin_px = float(self.get_parameter("track_roi_margin_px").get_parameter_value().double_value)
+        self.track_vel_alpha = float(self.get_parameter("track_vel_alpha").get_parameter_value().double_value)
+        self.track_max_age = float(self.get_parameter("track_max_age").get_parameter_value().double_value)
         now = time.time()
         self.last_seen_object_time = now
         self.last_seen_ellipse_time = now
@@ -228,6 +272,13 @@ class RFDetrNode(Node):
             self.get_logger().warning(f"Failed to convert depth image: {exc}")
             self.depth_array = None
         self.depth_encoding = depth_msg.encoding
+        # Clear per-frame debug annotations
+        self._dbg_track_mode = None
+        self._dbg_pred_roi = None
+        self._dbg_fallback_roi = None
+        self._dbg_last_center = None
+        self._dbg_proj_center = None
+        self._dbg_velocity = None
 
         annotated = frame.copy()
         current_time = time.time()
@@ -261,7 +312,7 @@ class RFDetrNode(Node):
             if object_detected:
                 self.last_seen_object_time = current_time
                 self.last_bbox = det_bbox
-                self.get_logger().info(f"Object found at [{det_cx,det_cy,det_depth}]")
+                #self.get_logger().info(f"Object found at [{det_cx,det_cy,det_depth}]")
                 if det_depth is not None and det_depth < self.depth_threshold:
                     self.state = State.ELLIPSE_SEARCH
                     self.get_logger().info("STATE → ELLIPSE_SEARCH")
@@ -281,6 +332,7 @@ class RFDetrNode(Node):
                     self.last_seen_ellipse_time = current_time
                     if ellipse_params is not None:
                         self._update_last_ellipse_bbox(frame.shape, ellipse_params)
+                        self._update_ellipse_motion(ellipse_params)
                         center, axes, angle = ellipse_params
                         cv2.ellipse(
                             annotated, center, axes, angle, 0, 360, COL_ELLIPSE, 2
@@ -302,6 +354,7 @@ class RFDetrNode(Node):
                         self.last_seen_ellipse_time = current_time
                         if ellipse_params is not None:
                             self._update_last_ellipse_bbox(frame.shape, ellipse_params)
+                            self._update_ellipse_motion(ellipse_params)
                             center, axes, angle = ellipse_params
                             cv2.ellipse(
                                 annotated, center, axes, angle, 0, 360, COL_ELLIPSE, 2
@@ -322,6 +375,11 @@ class RFDetrNode(Node):
                     self.get_logger().info("STATE → DETECT")
 
         elif self.state == State.ELLIPSE_TRACK:
+            if object_detected:
+                    self.state = State.ELLIPSE_SEARCH
+                    self.last_ellipse_bbox = None
+                    self.get_logger().info("STATE → ELLIPSE_SEARCH")
+
             ellipse_found, e_cx, e_cy, ellipse_params = self.track_ellipse(frame)
             if ellipse_found:
                 self.last_seen_ellipse_time = current_time
@@ -331,6 +389,7 @@ class RFDetrNode(Node):
                     center, axes, angle = ellipse_params
                     cv2.ellipse(annotated, center, axes, angle, 0, 360, COL_ELLIPSE, 2)
                     self._update_last_ellipse_bbox(frame.shape, ellipse_params)
+                    self._update_ellipse_motion(ellipse_params)
                 else:
                     cv2.circle(
                         annotated,
@@ -406,110 +465,114 @@ class RFDetrNode(Node):
             )
         return detections, boxes, scores, labels
 
-    def find_ellipse(self, frame, det_bbox, bottom_ratio = 0.4):
+    def find_ellipse(self, frame, det_bbox, bottom_ratio=0.3):
         """
-        Search for an ellipse shape near the *bottom* of the detected object bounding box.
-        Used in the ELLIPSE_SEARCH state to confirm object presence.
-
-        Args:
-            frame: full RGB or BGR image
-            det_bbox: (x1, y1, x2, y2) bounding box in full image coords
-
-        Returns:
-            ellipse_found: bool
-            ellipse_cx, ellipse_cy: Center of ellipse in full-frame coordinates
+        Depth-based bottom finder.
+        Returns ellipse_found, center_x, center_y, ellipse_params
+        ellipse_params: (center, axes, angle) OR None
         """
 
-        if det_bbox is None:
+        if det_bbox is None or self.depth_array is None:
             return False, None, None, None
 
         x1, y1, x2, y2 = map(int, det_bbox)
         h_frame, w_frame = frame.shape[:2]
+
+        # Expand ROI slightly (like original code)
         margin_y = int((y2 - y1) * 0.1)
         margin_x = int((x2 - x1) * 0.1)
-        x1 = max(0, min(w_frame - 1, x1 - margin_x))
-        x2 = max(0, min(w_frame, x2 + margin_x))
-        y1 = max(0, min(h_frame - 1, y1 - margin_y))
-        y2 = max(0, min(h_frame, y2 + margin_y))
+        x1 = max(0, x1 - margin_x)
+        y1 = max(0, y1 - margin_y)
+        x2 = min(w_frame - 1, x2 + margin_x)
+        y2 = min(h_frame - 1, y2 + margin_y)
 
         if x2 <= x1 or y2 <= y1:
             return False, None, None, None
 
-        bottom_ratio = float(np.clip(bottom_ratio, 0.05, 1.0))
-        min_contour_area  = 200       # ignore tiny contours
-        canny_thresh1     = 10
-        canny_thresh2     = canny_thresh1 * 3
-        gaussian_size     = (5, 5)
-
-        w = max(1, x2 - x1)
-        h = max(1, y2 - y1)
-
+        # Bottom region of bounding box
+        h = y2 - y1
         roi_y1 = y1 + int(h * (1.0 - bottom_ratio))
-        roi = frame[roi_y1:y2, x1:x2]
-        roi_debug = roi.copy() if self.enable_ellipse_debug_viz else None
 
-        if roi.size == 0:
+        depth_roi = self.depth_array[roi_y1:y2, x1:x2].astype(np.float32)
+
+        if depth_roi.size == 0:
             return False, None, None, None
 
-        if len(roi.shape) == 3:
-            gray = cv2.cvtColor(roi, cv2.COLOR_RGB2GRAY)
-        else:
-            gray = roi.copy()
-
-        blurred = cv2.GaussianBlur(gray, gaussian_size, 0)
-        edges = cv2.Canny(blurred, canny_thresh1, canny_thresh2)
-        contours, _ = cv2.findContours(edges, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
-
-        best_ellipse = None
-        best_area    = 0
-        candidate_ellipses = []
-
-        for c in contours:
-            if len(c) < 5:
-                continue
-
-            area = cv2.contourArea(c)
-            if area < min_contour_area:
-                continue
-
-            ellipse = cv2.fitEllipse(c)
-            (_, _), (MA, ma), _ = ellipse
-
-            if MA < 5 or ma < 5:
-                continue
-            if MA > w * 1.5 or ma > h * 1.5:
-                continue
-
-            candidate_ellipses.append({"ellipse": ellipse, "area": area})
-            if area > best_area:
-                best_area = area
-                best_ellipse = ellipse
-
-        if self.enable_ellipse_debug_viz:
-            self._publish_ellipse_debug(
-                frame=frame,
-                roi=roi_debug,
-                blurred=blurred,
-                edges=edges,
-                candidate_ellipses=candidate_ellipses,
-                best_ellipse=best_ellipse,
-                bbox=(x1, y1, x2, y2),
-                roi_y1=roi_y1,
-                canny_thresh=(canny_thresh1, canny_thresh2),
-            )
-
-        if best_ellipse is None:
+        # Remove invalid depths
+        valid = np.isfinite(depth_roi) & (depth_roi > 0)
+        if not np.any(valid):
             return False, None, None, None
 
-        (cx, cy), axes, angle = best_ellipse
-        world_cx = int(x1 + cx)
-        world_cy = int(roi_y1 + cy)
-        axis_a = max(1, int(round(axes[0] * 0.5)))
-        axis_b = max(1, int(round(axes[1] * 0.5)))
+        depth_valid = depth_roi.copy()
+        depth_valid[~valid] = np.nan
+
+        # Smooth to reduce noise
+        depth_blur = cv2.GaussianBlur(depth_valid, (5, 5), 0)
+
+        # Compute mask of near-minimum depth.
+        # Bottle bottom is typically the shallowest surface.
+        # Use 10th percentile to avoid outliers.
+        valid_depths = depth_blur[valid]
+        depth_thresh = np.nanpercentile(valid_depths, 10)
+        mask = depth_blur <= depth_thresh
+
+        if np.sum(mask) < 20:  # too small?
+            return False, None, None, None
+
+        ys, xs = np.where(mask)
+
+        # Compute pixel centroid in ROI
+        cx_roi = float(np.mean(xs))
+        cy_roi = float(np.mean(ys))
+
+        # Convert back to full image coords
+        world_cx = int(x1 + cx_roi)
+        world_cy = int(roi_y1 + cy_roi)
+
+        # Optional: approximate ellipse parameters
+        # (Using std dev of cluster as axes)
+        ax = float(np.std(xs)) * 1.5
+        ay = float(np.std(ys)) * 1.5
+        ax = max(1.0, ax)
+        ay = max(1.0, ay)
+
         ellipse_center = (world_cx, world_cy)
-        ellipse_axes = (axis_a, axis_b)
+        ellipse_axes = (int(ax), int(ay))
+        ellipse_angle = 0.0  # We don't estimate rotation
 
-        return True, world_cx, world_cy, (ellipse_center, ellipse_axes, angle)
+        ellipse_params = (ellipse_center, ellipse_axes, ellipse_angle)
+
+        return True, world_cx, world_cy, ellipse_params
+
+    def _ellipse_debug_param_callback(self, msg: Float64MultiArray):
+        values = list(msg.data)
+        overrides = {}
+        for idx, name in enumerate(self.ellipse_param_name_order):
+            if idx < len(values):
+                val = values[idx]
+                try:
+                    if math.isnan(val):
+                        continue
+                except TypeError:
+                    pass
+                overrides[name] = float(val)
+        if overrides:
+            if self.ellipse_param_overrides is None:
+                self.ellipse_param_overrides = {}
+            self.ellipse_param_overrides.update(overrides)
+            self.get_logger().info(
+                "Updated ellipse debug params: "
+                + ", ".join(f"{k}={v:.2f}" for k, v in overrides.items())
+            )
+        else:
+            self.ellipse_param_overrides = None
+            self.get_logger().info("Cleared ellipse debug params; falling back to defaults")
+
+    def _get_ellipse_params(self):
+        params = dict(self.default_ellipse_params)
+        if self.ellipse_param_overrides:
+            params.update(self.ellipse_param_overrides)
+        return params
 
     def _publish_ellipse_debug(
         self,
@@ -522,6 +585,7 @@ class RFDetrNode(Node):
         bbox,
         roi_y1,
         canny_thresh,
+        state_name,
     ):
         if not self.enable_ellipse_debug_viz or self.debug_image_pub is None:
             return
@@ -544,6 +608,41 @@ class RFDetrNode(Node):
         roi_candidates = roi_color.copy() if roi_color is not None else None
         frame_overlay = frame.copy()
         cv2.rectangle(frame_overlay, (x1, roi_y1), (x2, y2), (255, 0, 0), 1)
+
+        # Tracking overlays (projected ROI, last bbox, motion arrow)
+        try:
+            # Last ellipse bbox
+            if self.last_ellipse_bbox is not None:
+                lx1, ly1, lx2, ly2 = map(int, self.last_ellipse_bbox)
+                cv2.rectangle(frame_overlay, (lx1, ly1), (lx2, ly2), (0, 255, 255), 1)
+                cv2.putText(frame_overlay, "last ellipse bbox", (lx1, max(0, ly1 - 6)), font, 0.4, (0, 255, 255), 1, cv2.LINE_AA)
+            # Predicted ROI
+            if self._dbg_pred_roi is not None:
+                px1, py1, px2, py2 = map(int, self._dbg_pred_roi)
+                cv2.rectangle(frame_overlay, (px1, py1), (px2, py2), (255, 0, 255), 2)
+                cv2.putText(frame_overlay, "pred ROI", (px1, max(0, py1 - 6)), font, 0.5, (255, 0, 255), 1, cv2.LINE_AA)
+            # Fallback ROI
+            if self._dbg_fallback_roi is not None:
+                fx1, fy1, fx2, fy2 = map(int, self._dbg_fallback_roi)
+                cv2.rectangle(frame_overlay, (fx1, fy1), (fx2, fy2), (0, 255, 255), 2)
+                cv2.putText(frame_overlay, "fb ROI", (fx1, max(0, fy1 - 6)), font, 0.5, (0, 255, 255), 1, cv2.LINE_AA)
+            # Motion vectors
+            if self.ev_center is not None:
+                lc = (int(round(self.ev_center[0])), int(round(self.ev_center[1])))
+                cv2.circle(frame_overlay, lc, 3, (0, 255, 0), -1)
+            if self._dbg_proj_center is not None and self._dbg_last_center is not None:
+                p = (int(round(self._dbg_proj_center[0])), int(round(self._dbg_proj_center[1])))
+                l = (int(round(self._dbg_last_center[0])), int(round(self._dbg_last_center[1])))
+                cv2.arrowedLine(frame_overlay, l, p, (255, 0, 255), 2, tipLength=0.2)
+                cv2.circle(frame_overlay, p, 3, (255, 0, 255), -1)
+                if self._dbg_velocity is not None:
+                    vx, vy = self._dbg_velocity
+                    cv2.putText(frame_overlay, f"v=({vx:.1f},{vy:.1f})", (p[0] + 6, p[1] - 6), font, 0.5, (255, 0, 255), 1, cv2.LINE_AA)
+            # Mode label
+            if self._dbg_track_mode:
+                cv2.putText(frame_overlay, f"track: {self._dbg_track_mode}", (10, 50), font, 0.6, (0, 200, 255), 2, cv2.LINE_AA)
+        except Exception:
+            pass
 
         sorted_candidates = sorted(candidate_ellipses, key=lambda e: e["area"], reverse=True)
         for idx, cand in enumerate(sorted_candidates):
@@ -642,6 +741,18 @@ class RFDetrNode(Node):
             mosaic_rows.append(np.hstack(row_tiles))
         debug_canvas = np.vstack(mosaic_rows)
 
+        if state_name:
+            cv2.putText(
+                debug_canvas,
+                f"State: {state_name}",
+                (10, 30),
+                font,
+                1.0,
+                (0, 255, 255),
+                2,
+                cv2.LINE_AA,
+            )
+
         try:
             self.debug_image_pub.publish(
                 self.bridge.cv2_to_imgmsg(debug_canvas, "rgb8")
@@ -684,10 +795,83 @@ class RFDetrNode(Node):
 
     def track_ellipse(self, frame):
         """
-        Brute-force ellipse search across the whole frame.
+        Constant-velocity ROI projection around last ellipse, with fallback.
         """
         h, w = frame.shape[:2]
+        now = time.time()
+
+        # If we have a recent ellipse and bbox, project center forward
+        use_pred = self.last_ellipse_bbox is not None and self.ev_center is not None and self.ev_time is not None and (now - self.ev_time) <= self.track_max_age
+        if use_pred:
+            dt = max(0.0, now - self.ev_time)
+            proj = np.array(self.ev_center, dtype=float) + self.ev_vel * dt
+            # ROI size based on last ellipse bbox scaled and with margin
+            x1_l, y1_l, x2_l, y2_l = self.last_ellipse_bbox
+            bw = max(4, x2_l - x1_l)
+            bh = max(4, y2_l - y1_l)
+            scale = max(1.0, float(self.track_roi_scale))
+            margin = max(0.0, float(self.track_roi_margin_px))
+            roi_w = int(round(bw * scale + 2 * margin))
+            roi_h = int(round(bh * scale + 2 * margin))
+            cx = float(np.clip(proj[0], 0, w - 1))
+            cy = float(np.clip(proj[1], 0, h - 1))
+            rx1 = int(np.clip(round(cx - roi_w * 0.5), 0, w - 1))
+            ry1 = int(np.clip(round(cy - roi_h * 0.5), 0, h - 1))
+            rx2 = int(np.clip(round(cx + roi_w * 0.5), 0, w))
+            ry2 = int(np.clip(round(cy + roi_h * 0.5), 0, h))
+            # Debug annotate
+            self._dbg_track_mode = "predicted"
+            self._dbg_pred_roi = (rx1, ry1, rx2, ry2)
+            self._dbg_last_center = tuple(self.ev_center) if self.ev_center is not None else None
+            self._dbg_proj_center = (cx, cy)
+            self._dbg_velocity = tuple(self.ev_vel) if self.ev_vel is not None else None
+            if rx2 <= rx1 or ry2 <= ry1:
+                use_pred = False
+            else:
+                found, ecx, ecy, eparams = self.find_ellipse(frame, (rx1, ry1, rx2, ry2), bottom_ratio=1.0)
+                if found:
+                    return True, ecx, ecy, eparams
+
+        # Fallback: search around last bbox location (expanded)
+        if self.last_ellipse_bbox is not None:
+            x1, y1, x2, y2 = self.last_ellipse_bbox
+            bw = max(4, x2 - x1)
+            bh = max(4, y2 - y1)
+            scale = max(1.5, float(self.track_roi_scale))
+            margin = max(20.0, float(self.track_roi_margin_px))
+            cx = (x1 + x2) * 0.5
+            cy = (y1 + y2) * 0.5
+            roi_w = int(round(bw * scale + 2 * margin))
+            roi_h = int(round(bh * scale + 2 * margin))
+            rx1 = int(np.clip(round(cx - roi_w * 0.5), 0, w - 1))
+            ry1 = int(np.clip(round(cy - roi_h * 0.5), 0, h - 1))
+            rx2 = int(np.clip(round(cx + roi_w * 0.5), 0, w))
+            ry2 = int(np.clip(round(cy + roi_h * 0.5), 0, h))
+            self._dbg_track_mode = self._dbg_track_mode or "expanded"
+            self._dbg_fallback_roi = (rx1, ry1, rx2, ry2)
+            if rx2 > rx1 and ry2 > ry1:
+                found, ecx, ecy, eparams = self.find_ellipse(frame, (rx1, ry1, rx2, ry2), bottom_ratio=1.0)
+                if found:
+                    return True, ecx, ecy, eparams
+
+        # Last resort: brute-force whole frame
+        self._dbg_track_mode = self._dbg_track_mode or "full"
         return self.find_ellipse(frame, (0, 0, w, h), bottom_ratio=1.0)
+
+    def _update_ellipse_motion(self, ellipse_params):
+        try:
+            center, _, _ = ellipse_params
+            cx, cy = float(center[0]), float(center[1])
+        except Exception:
+            return
+        now = time.time()
+        if self.ev_center is not None and self.ev_time is not None:
+            dt = now - self.ev_time
+            if dt > 1e-3:
+                inst_v = (np.array([cx, cy], dtype=float) - np.array(self.ev_center, dtype=float)) / dt
+                self.ev_vel = self.track_vel_alpha * self.ev_vel + (1.0 - self.track_vel_alpha) * inst_v
+        self.ev_center = (cx, cy)
+        self.ev_time = now
 
     def get_depth_at(self, depth_array, cx, cy):
         """
