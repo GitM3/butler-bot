@@ -25,9 +25,10 @@ COCO_CLASSES = {
 }
 
 class State(Enum):
-    DETECT = 1
-    ELLIPSE_SEARCH = 2
-    ELLIPSE_TRACK = 3
+    DETECT = 0
+    ELLIPSE_SEARCH = 1
+    ELLIPSE_TRACK = 2
+STATES = ["DETECT","E_SEARCH","E_TRACK"]
 
 def sigmoid(x):
     return 1 / (1 + np.exp(-x))
@@ -175,36 +176,10 @@ class RFDetrNode(Node):
         self.ts.registerCallback(self.callback)
 
         self.image_pub = self.create_publisher(Image, "/camera/annotated", 10)
-        self.debug_image_pub = self.create_publisher(Image, "/camera/annotated_debug", 10)
         self.target_pub = self.create_publisher(Float64MultiArray, "/target/center", 10)
-        self.enable_ellipse_debug_viz = True
-        self.default_ellipse_params = {
-            "bottom_ratio": 0.5,
-            "min_contour_area": 1000.0,
-            "canny_thresh1": 10.0,
-            "canny_thresh2": 80.0,
-            "gaussian_kernel": 5.0,
-            "max_axis_scale": 1.5,
-            "min_axis_length": 5.0,
-            "axis_ratio_min": 0.55,
-        }
-        self.ellipse_param_overrides = None
-        self.ellipse_param_name_order = [
-            "bottom_ratio",
-            "min_contour_area",
-            "canny_thresh1",
-            "canny_thresh2",
-            "gaussian_kernel",
-            "max_axis_scale",
-            "min_axis_length",
-            "axis_ratio_min",
-        ]
-        self.ellipse_debug_param_sub = self.create_subscription(
-            Float64MultiArray,
-            "/ellipse/params",
-            self._ellipse_debug_param_callback,
-            10,
-        )
+        self.find_debug_pub = self.create_publisher(Image, "/ellipse/find_debug", 1)
+        self.find_mask_pub = self.create_publisher(Image, "/ellipse/find_mask", 1)
+        self.track_debug_pub = self.create_publisher(Image, "/ellipse/track_debug", 1)
 
         filter_labels = ["cup", "bottle", "wine glass"]
         self.target_labels = [i for i, n in COCO_CLASSES.items() if n in filter_labels]
@@ -236,37 +211,16 @@ class RFDetrNode(Node):
         self.depth_threshold = 2   # meters — adjust as needed
         self.last_bbox = None
         self.last_ellipse_bbox = None
-        # Simple constant-velocity tracking state (pixels/sec)
-        self.ev_center = None  # last ellipse center (x, y)
-        self.ev_vel = np.array([0.0, 0.0], dtype=float)
-        self.ev_time = None
-        # Debug annotations for tracking
-        self._dbg_track_mode = None
-        self._dbg_pred_roi = None
-        self._dbg_fallback_roi = None
-        self._dbg_last_center = None
-        self._dbg_proj_center = None
-        self._dbg_velocity = None
-        # Tracking tunables
-        self.declare_parameter("track_roi_scale", 2.0)  # scale of last ellipse bbox
-        self.declare_parameter("track_roi_margin_px", 40.0)  # extra pixels added to each side
-        self.declare_parameter("track_vel_alpha", 0.8)  # EMA for velocity smoothing
-        self.declare_parameter("track_max_age", 1.0)  # seconds; fall back if older
-        self.track_roi_scale = float(self.get_parameter("track_roi_scale").get_parameter_value().double_value)
-        self.track_roi_margin_px = float(self.get_parameter("track_roi_margin_px").get_parameter_value().double_value)
-        self.track_vel_alpha = float(self.get_parameter("track_vel_alpha").get_parameter_value().double_value)
-        self.track_max_age = float(self.get_parameter("track_max_age").get_parameter_value().double_value)
         now = time.time()
         self.last_seen_object_time = now
         self.last_seen_ellipse_time = now
         self.depth_array = None
-        self.depth_encoding = ""
         self.prev_gray = None
+        self.target_ellipse_keyframes = 0 # Keyframes of good target ellipse pairs.
 
 
     def callback(self, rgb_msg, depth_msg):
         frame = self.bridge.imgmsg_to_cv2(rgb_msg, "rgb8")
-        self.depth_img = depth_msg  # Store for depth lookup
         try:
             self.depth_array = self.bridge.imgmsg_to_cv2(
                 depth_msg, desired_encoding="passthrough"
@@ -274,14 +228,6 @@ class RFDetrNode(Node):
         except Exception as exc:  # pragma: no cover - defensive
             self.get_logger().warning(f"Failed to convert depth image: {exc}")
             self.depth_array = None
-        self.depth_encoding = depth_msg.encoding
-        # Clear per-frame debug annotations
-        self._dbg_track_mode = None
-        self._dbg_pred_roi = None
-        self._dbg_fallback_roi = None
-        self._dbg_last_center = None
-        self._dbg_proj_center = None
-        self._dbg_velocity = None
 
         annotated = frame.copy()
         current_time = time.time()
@@ -308,46 +254,44 @@ class RFDetrNode(Node):
         if det_cx is not None and det_cy is not None:
             cv2.circle(annotated, (int(det_cx), int(det_cy)), 4, COL_TARGET, -1)
 
-        DETECT_LOST_THRESHOLD = 0.50
+        KF_THRESHOLD = 5
         ELLIPSE_LOST_THRESHOLD = 0.50
 
         if object_detected:
             self.last_seen_object_time = current_time
             self.last_bbox = det_bbox
+        
+
+        ellipse_found = False
+        e_cx = e_cy = None
+        ellipse_params = None
 
         if self.state == State.DETECT:
                 #self.get_logger().info(f"Object found at [{det_cx,det_cy,det_depth}]")
                 if object_detected and det_depth is not None and det_depth < self.depth_threshold:
                     self.state = State.ELLIPSE_SEARCH
                     self.get_logger().info("STATE → ELLIPSE_SEARCH")
+                    self.target_ellipse_keyframes = 0
         elif self.state == State.ELLIPSE_SEARCH:
             if object_detected:
-                ellipse_found = False
-                e_cx = e_cy = None
-                ellipse_params = None
                 if det_bbox is not None:
                     ellipse_found, e_cx, e_cy, ellipse_params = self.find_ellipse(
                         frame, det_bbox
                     )
                 if ellipse_found:
                     self.last_seen_ellipse_time = current_time
+                    self.target_ellipse_keyframes += 1
                     if ellipse_params is not None:
                         self._update_last_ellipse_bbox(frame.shape, ellipse_params)
-                        self._update_ellipse_motion(ellipse_params)
                         center, axes, angle = ellipse_params
                         cv2.ellipse(
                             annotated, center, axes, angle, 0, 360, COL_ELLIPSE, 2
                         )
-
             else:
-                if self.last_seen_object_time is None:
-                    self.last_seen_object_time = current_time
-                time_missing_obj = current_time - self.last_seen_object_time
-
-                ellipse_found = False
-                e_cx = e_cy = None
-                ellipse_params = None
-                if self.last_bbox is not None:
+                if self.target_ellipse_keyframes < KF_THRESHOLD:
+                    self.state = State.DETECT
+                    self.get_logger().info("STATE → DETECT (bad init)")
+                elif self.last_bbox is not None:
                     ellipse_found, e_cx, e_cy, ellipse_params = self.find_ellipse(
                         frame, self.last_bbox
                     )
@@ -355,26 +299,16 @@ class RFDetrNode(Node):
                         self.last_seen_ellipse_time = current_time
                         if ellipse_params is not None:
                             self._update_last_ellipse_bbox(frame.shape, ellipse_params)
-                            self._update_ellipse_motion(ellipse_params)
                             center, axes, angle = ellipse_params
                             cv2.ellipse(
                                 annotated, center, axes, angle, 0, 360, COL_ELLIPSE, 2
                             )
-
-                ellipse_lost_time = (
-                    current_time - self.last_seen_ellipse_time
-                    if self.last_seen_ellipse_time is not None
-                    else float("inf")
-                )
-
-                if ellipse_found and time_missing_obj > DETECT_LOST_THRESHOLD:
-                    self.state = State.ELLIPSE_TRACK
-                    self.get_logger().info("STATE → ELLIPSE_TRACK")
-                elif not ellipse_found and ellipse_lost_time > ELLIPSE_LOST_THRESHOLD:
-                    self.state = State.DETECT
-                    self.last_ellipse_bbox = None
-                    self.get_logger().info("STATE → DETECT")
-
+                        self.state = State.ELLIPSE_TRACK
+                        self.get_logger().info("STATE → ELLIPSE_TRACK (stable init)")
+                    else:
+                        self.state = State.DETECT
+                        self.last_ellipse_bbox = None
+                        self.get_logger().info("STATE → DETECT (lost both)")
         elif self.state == State.ELLIPSE_TRACK:
             if object_detected:
                     self.state = State.DETECT
@@ -390,7 +324,6 @@ class RFDetrNode(Node):
                     center, axes, angle = ellipse_params
                     cv2.ellipse(annotated, center, axes, angle, 0, 360, COL_ELLIPSE, 2)
                     self._update_last_ellipse_bbox(frame.shape, ellipse_params)
-                    self._update_ellipse_motion(ellipse_params)
                 else:
                     cv2.circle(
                         annotated,
@@ -433,6 +366,15 @@ class RFDetrNode(Node):
             COL_WHITE,
             2,
         )
+        cv2.putText(
+            annotated,
+            "S: " +STATES[self.state.value],
+            (120, 25),
+            cv2.FONT_HERSHEY_SIMPLEX,
+            0.8,
+            COL_WHITE,
+            2,
+        )
 
         self.image_pub.publish(self.bridge.cv2_to_imgmsg(annotated, "rgb8"))
         publish_detections = list(detections)
@@ -466,7 +408,7 @@ class RFDetrNode(Node):
             )
         return detections, boxes, scores, labels
 
-    def find_ellipse(self, frame, det_bbox, bottom_ratio=0.3):
+    def find_ellipse(self, frame, det_bbox, bottom_ratio=1):
         """
         Depth-based bottom finder.
         Returns ellipse_found, center_x, center_y, ellipse_params
@@ -479,9 +421,9 @@ class RFDetrNode(Node):
         x1, y1, x2, y2 = map(int, det_bbox)
         h_frame, w_frame = frame.shape[:2]
 
-        # Expand ROI slightly (like original code)
-        margin_y = int((y2 - y1) * 0.1)
-        margin_x = int((x2 - x1) * 0.1)
+        # Expand ROI 
+        margin_y = int((y2 - y1) * 0.3)
+        margin_x = int((x2 - x1) * 0.3)
         x1 = max(0, x1 - margin_x)
         y1 = max(0, y1 - margin_y)
         x2 = min(w_frame - 1, x2 + margin_x)
@@ -490,19 +432,45 @@ class RFDetrNode(Node):
         if x2 <= x1 or y2 <= y1:
             return False, None, None, None
 
+        roi_color = frame[y1:y2, x1:x2]
+        roi_copy = roi_color.copy() if roi_color.size else None
+        mask_img = None
+        depth_vis_img = None
+        depth_thresh_val = None
+        mask_count = 0
+        ellipse_params = None
+        world_cx = None
+        world_cy = None
+        found = False
+
+        def finish():
+            self._publish_find_debug(
+                roi_copy,
+                mask_img,
+                depth_vis_img,
+                ellipse_params,
+                (x1, y1, x2, y2),
+                depth_thresh_val,
+                mask_count,
+                found,
+            )
+            return found, world_cx, world_cy, ellipse_params
+
         # Bottom region of bounding box
         h = y2 - y1
         roi_y1 = y1 + int(h * (1.0 - bottom_ratio))
+        if roi_y1 >= y2:
+            return finish()
 
-        depth_roi = self.depth_array[roi_y1:y2, x1:x2].astype(np.float32)
-
-        if depth_roi.size == 0:
-            return False, None, None, None
+        depth_slice = self.depth_array[roi_y1:y2, x1:x2]
+        if depth_slice.size == 0:
+            return finish()
+        depth_roi = depth_slice.astype(np.float32)
 
         # Remove invalid depths
         valid = np.isfinite(depth_roi) & (depth_roi > 0)
         if not np.any(valid):
-            return False, None, None, None
+            return finish()
 
         depth_valid = depth_roi.copy()
         depth_valid[~valid] = np.nan
@@ -511,14 +479,33 @@ class RFDetrNode(Node):
         depth_blur = cv2.GaussianBlur(depth_valid, (5, 5), 0)
 
         # Compute mask of near-minimum depth.
-        # Bottle bottom is typically the shallowest surface.
-        # Use 10th percentile to avoid outliers.
         valid_depths = depth_blur[valid]
+        if valid_depths.size == 0:
+            return finish()
         depth_thresh = np.nanpercentile(valid_depths, 10)
+        depth_thresh_val = float(depth_thresh)
         mask = depth_blur <= depth_thresh
+        mask_count = int(np.sum(mask))
 
-        if np.sum(mask) < 20:  # too small?
-            return False, None, None, None
+        # Prepare visualization buffers for debugging
+        mask_full = np.zeros((y2 - y1, x2 - x1), dtype=np.uint8)
+        mask_full_offset = max(0, roi_y1 - y1)
+        mask_full[mask_full_offset:, :] = (mask.astype(np.uint8) * 255)
+        mask_img = mask_full
+
+        depth_full = np.zeros((y2 - y1, x2 - x1), dtype=np.uint8)
+        finite_depths = depth_roi[valid]
+        if finite_depths.size > 0:
+            d_min = float(np.min(finite_depths))
+            d_max = float(np.max(finite_depths))
+            span = max(1e-6, d_max - d_min)
+            depth_norm = np.clip((depth_roi - d_min) / span, 0.0, 1.0)
+            depth_norm[~np.isfinite(depth_norm)] = 0.0
+            depth_full[mask_full_offset:, :] = (depth_norm * 255).astype(np.uint8)
+        depth_vis_img = depth_full
+
+        if mask_count < 20:  # too small?
+            return finish()
 
         ys, xs = np.where(mask)
 
@@ -530,8 +517,7 @@ class RFDetrNode(Node):
         world_cx = int(x1 + cx_roi)
         world_cy = int(roi_y1 + cy_roi)
 
-        # Optional: approximate ellipse parameters
-        # (Using std dev of cluster as axes)
+        # Approximate ellipse parameters
         ax = float(np.std(xs)) * 1.5
         ay = float(np.std(ys)) * 1.5
         ax = max(1.0, ax)
@@ -539,181 +525,87 @@ class RFDetrNode(Node):
 
         ellipse_center = (world_cx, world_cy)
         ellipse_axes = (int(ax), int(ay))
-        ellipse_angle = 0.0  # We don't estimate rotation
+        ellipse_angle = 0.0
 
         ellipse_params = (ellipse_center, ellipse_axes, ellipse_angle)
+        found = True
+        return finish()
 
-        return True, world_cx, world_cy, ellipse_params
-
-    def _ellipse_debug_param_callback(self, msg: Float64MultiArray):
-        values = list(msg.data)
-        overrides = {}
-        for idx, name in enumerate(self.ellipse_param_name_order):
-            if idx < len(values):
-                val = values[idx]
-                try:
-                    if math.isnan(val):
-                        continue
-                except TypeError:
-                    pass
-                overrides[name] = float(val)
-        if overrides:
-            if self.ellipse_param_overrides is None:
-                self.ellipse_param_overrides = {}
-            self.ellipse_param_overrides.update(overrides)
-            self.get_logger().info(
-                "Updated ellipse debug params: "
-                + ", ".join(f"{k}={v:.2f}" for k, v in overrides.items())
-            )
-        else:
-            self.ellipse_param_overrides = None
-            self.get_logger().info("Cleared ellipse debug params; falling back to defaults")
-
-    def _get_ellipse_params(self):
-        params = dict(self.default_ellipse_params)
-        if self.ellipse_param_overrides:
-            params.update(self.ellipse_param_overrides)
-        return params
-
-    def _publish_ellipse_debug(
+    def _publish_find_debug(
         self,
-        frame,
         roi,
-        blurred,
-        edges,
-        candidate_ellipses,
-        best_ellipse,
+        mask_img,
+        depth_img,
+        ellipse_params,
         bbox,
-        roi_y1,
-        canny_thresh,
-        state_name,
+        depth_thresh,
+        mask_pixels,
+        found,
     ):
-        if not self.enable_ellipse_debug_viz or self.debug_image_pub is None:
-            return
-        if roi is None or roi.size == 0:
+        if self.find_mask_pub is not None and mask_img is not None:
+            try:
+                mask_msg = self.bridge.cv2_to_imgmsg(mask_img, encoding="mono8")
+                self.find_mask_pub.publish(mask_msg)
+            except Exception:
+                pass
+
+        if self.find_debug_pub is None or roi is None:
             return
 
-        x1, y1, x2, y2 = bbox
         font = cv2.FONT_HERSHEY_SIMPLEX
-
-        def _to_rgb(image):
-            if image is None:
-                return None
-            if len(image.shape) == 2:
-                return cv2.cvtColor(image, cv2.COLOR_GRAY2RGB)
-            return image.copy()
-
-        roi_color = _to_rgb(roi)
-        blurred_rgb = _to_rgb(blurred)
-        edges_rgb = _to_rgb(edges)
-        roi_candidates = roi_color.copy() if roi_color is not None else None
-        frame_overlay = frame.copy()
-        cv2.rectangle(frame_overlay, (x1, roi_y1), (x2, y2), (255, 0, 0), 1)
-
-        # Tracking overlays (projected ROI, last bbox, motion arrow)
-        try:
-            # Last ellipse bbox
-            if self.last_ellipse_bbox is not None:
-                lx1, ly1, lx2, ly2 = map(int, self.last_ellipse_bbox)
-                cv2.rectangle(frame_overlay, (lx1, ly1), (lx2, ly2), (0, 255, 255), 1)
-                cv2.putText(frame_overlay, "last ellipse bbox", (lx1, max(0, ly1 - 6)), font, 0.4, (0, 255, 255), 1, cv2.LINE_AA)
-            # Predicted ROI
-            if self._dbg_pred_roi is not None:
-                px1, py1, px2, py2 = map(int, self._dbg_pred_roi)
-                cv2.rectangle(frame_overlay, (px1, py1), (px2, py2), (255, 0, 255), 2)
-                cv2.putText(frame_overlay, "pred ROI", (px1, max(0, py1 - 6)), font, 0.5, (255, 0, 255), 1, cv2.LINE_AA)
-            # Fallback ROI
-            if self._dbg_fallback_roi is not None:
-                fx1, fy1, fx2, fy2 = map(int, self._dbg_fallback_roi)
-                cv2.rectangle(frame_overlay, (fx1, fy1), (fx2, fy2), (0, 255, 255), 2)
-                cv2.putText(frame_overlay, "fb ROI", (fx1, max(0, fy1 - 6)), font, 0.5, (0, 255, 255), 1, cv2.LINE_AA)
-            # Motion vectors
-            if self.ev_center is not None:
-                lc = (int(round(self.ev_center[0])), int(round(self.ev_center[1])))
-                cv2.circle(frame_overlay, lc, 3, (0, 255, 0), -1)
-            if self._dbg_proj_center is not None and self._dbg_last_center is not None:
-                p = (int(round(self._dbg_proj_center[0])), int(round(self._dbg_proj_center[1])))
-                l = (int(round(self._dbg_last_center[0])), int(round(self._dbg_last_center[1])))
-                cv2.arrowedLine(frame_overlay, l, p, (255, 0, 255), 2, tipLength=0.2)
-                cv2.circle(frame_overlay, p, 3, (255, 0, 255), -1)
-                if self._dbg_velocity is not None:
-                    vx, vy = self._dbg_velocity
-                    cv2.putText(frame_overlay, f"v=({vx:.1f},{vy:.1f})", (p[0] + 6, p[1] - 6), font, 0.5, (255, 0, 255), 1, cv2.LINE_AA)
-            # Mode label
-            if self._dbg_track_mode:
-                cv2.putText(frame_overlay, f"track: {self._dbg_track_mode}", (10, 50), font, 0.6, (0, 200, 255), 2, cv2.LINE_AA)
-        except Exception:
-            pass
-
-        sorted_candidates = sorted(candidate_ellipses, key=lambda e: e["area"], reverse=True)
-        for idx, cand in enumerate(sorted_candidates):
-            ellipse = cand["ellipse"]
-            center_local = (int(round(ellipse[0][0])), int(round(ellipse[0][1])))
-            axes = (
-                max(1, int(round(ellipse[1][0] * 0.5))),
-                max(1, int(round(ellipse[1][1] * 0.5))),
+        overlay = roi.copy()
+        x1, y1, _, _ = bbox
+        if ellipse_params is not None:
+            center, axes, angle = ellipse_params
+            local_center = (int(center[0] - x1), int(center[1] - y1))
+            cv2.ellipse(
+                overlay,
+                local_center,
+                (max(1, axes[0]), max(1, axes[1])),
+                angle,
+                0,
+                360,
+                COL_ELLIPSE,
+                2,
             )
-            color = (0, 255, 0) if best_ellipse is not None and ellipse == best_ellipse else (0, 215, 255)
-            thickness = 2 if best_ellipse is not None and ellipse == best_ellipse else 1
-            label = f"#{idx+1}"
+            cv2.circle(overlay, local_center, 3, COL_TARGET, -1)
 
-            if roi_candidates is not None:
-                cv2.ellipse(roi_candidates, center_local, axes, ellipse[2], 0, 360, color, thickness)
-                cv2.putText(
-                    roi_candidates,
-                    label,
-                    (center_local[0] + 4, center_local[1] - 4),
-                    font,
-                    0.4,
-                    color,
-                    1,
-                    cv2.LINE_AA,
-                )
-
-            world_center = (
-                int(round(x1 + center_local[0])),
-                int(round(roi_y1 + center_local[1])),
-            )
-            cv2.ellipse(frame_overlay, world_center, axes, ellipse[2], 0, 360, color, thickness)
-            cv2.putText(
-                frame_overlay,
-                label,
-                (world_center[0] + 4, world_center[1] - 4),
-                font,
-                0.4,
-                color,
-                1,
-                cv2.LINE_AA,
-            )
+        status = "FOUND" if found else "SEARCH"
+        caption = f"{status} | mask={mask_pixels}"
+        if depth_thresh is not None:
+            caption += f" thr={depth_thresh:.3f}"
+        cv2.putText(
+            overlay,
+            caption,
+            (10, max(20, overlay.shape[0] - 10)),
+            font,
+            0.6,
+            (255, 255, 255),
+            2,
+            cv2.LINE_AA,
+        )
 
         tiles = []
-        captions = []
-        if roi_color is not None:
-            tiles.append(roi_color)
-            captions.append("ROI (color)")
-        if blurred_rgb is not None:
-            tiles.append(blurred_rgb)
-            captions.append("Blurred gray")
-        if edges_rgb is not None:
-            tiles.append(edges_rgb)
-            captions.append(
-                f"Canny ({canny_thresh[0]}, {canny_thresh[1]})"
-            )
-        if roi_candidates is not None:
-            tiles.append(roi_candidates)
-            captions.append(
-                f"Candidates: {len(sorted_candidates)}"
-            )
-        tiles.append(frame_overlay)
-        captions.append("Frame overlay")
+        tiles.append((overlay, "ROI overlay"))
+        if mask_img is not None:
+            mask_rgb = cv2.applyColorMap(mask_img, cv2.COLORMAP_TURBO)
+            mask_rgb = cv2.cvtColor(mask_rgb, cv2.COLOR_BGR2RGB)
+            tiles.append((mask_rgb, "Depth mask"))
+        if depth_img is not None and np.any(depth_img):
+            depth_rgb = cv2.applyColorMap(depth_img, cv2.COLORMAP_TURBO)
+            depth_rgb = cv2.cvtColor(depth_rgb, cv2.COLOR_BGR2RGB)
+            tiles.append((depth_rgb, "Depth slice"))
 
-        tile_w, tile_h = 320, 240
         prepared_tiles = []
-        for img, caption in zip(tiles, captions):
-            resized = cv2.resize(img, (tile_w, tile_h), interpolation=cv2.INTER_AREA)
+        tile_w, tile_h = 320, 240
+        for img, label in tiles:
+            if img is None:
+                continue
+            rgb = img if img.ndim == 3 else cv2.cvtColor(img, cv2.COLOR_GRAY2RGB)
+            resized = cv2.resize(rgb, (tile_w, tile_h), interpolation=cv2.INTER_AREA)
             cv2.putText(
                 resized,
-                caption,
+                label,
                 (8, 22),
                 font,
                 0.6,
@@ -726,37 +618,10 @@ class RFDetrNode(Node):
         if not prepared_tiles:
             return
 
-        cols = 3
-        rows = int(math.ceil(len(prepared_tiles) / cols))
-        blank_tile = np.zeros((tile_h, tile_w, 3), dtype=prepared_tiles[0].dtype)
-        mosaic_rows = []
-        tile_idx = 0
-        for _ in range(rows):
-            row_tiles = []
-            for _ in range(cols):
-                if tile_idx < len(prepared_tiles):
-                    row_tiles.append(prepared_tiles[tile_idx])
-                    tile_idx += 1
-                else:
-                    row_tiles.append(blank_tile.copy())
-            mosaic_rows.append(np.hstack(row_tiles))
-        debug_canvas = np.vstack(mosaic_rows)
-
-        if state_name:
-            cv2.putText(
-                debug_canvas,
-                f"State: {state_name}",
-                (10, 30),
-                font,
-                1.0,
-                (0, 255, 255),
-                2,
-                cv2.LINE_AA,
-            )
-
+        debug_canvas = np.hstack(prepared_tiles)
         try:
-            self.debug_image_pub.publish(
-                self.bridge.cv2_to_imgmsg(debug_canvas, "rgb8")
+            self.find_debug_pub.publish(
+                self.bridge.cv2_to_imgmsg(debug_canvas, encoding="rgb8")
             )
         except Exception:
             pass
@@ -803,6 +668,11 @@ class RFDetrNode(Node):
 
         gray = cv2.cvtColor(frame, cv2.COLOR_RGB2GRAY)
         h, w = frame.shape[:2]
+        debug_rois = []
+        if getattr(self, "last_ellipse_bbox", None) is not None:
+            debug_rois.append(
+                {"rect": self.last_ellipse_bbox, "color": (0, 255, 255), "label": "last ellipse"}
+            )
 
         # ============================================================
         # 1) TRY OPTICAL FLOW (KLT)
@@ -875,6 +745,14 @@ class RFDetrNode(Node):
                     # Update KLT state
                     self.klt_points = tracked.reshape(-1, 1, 2)
                     self.prev_gray = gray
+                    self._publish_track_debug(
+                        frame,
+                        points=tracked,
+                        ellipse_params=ellipse_params,
+                        rois=debug_rois,
+                        mode="KLT",
+                        extra_text=f"{tracked.shape[0]} pts",
+                    )
                     return True, cx, cy, ellipse_params
 
             # If KLT failed, reset it to allow fallback
@@ -899,12 +777,22 @@ class RFDetrNode(Node):
             ry1 = int(np.clip(cy - roi_h / 2, 0, h - 1))
             rx2 = int(np.clip(cx + roi_w / 2, 0, w))
             ry2 = int(np.clip(cy + roi_h / 2, 0, h))
+            tight_roi = (rx1, ry1, rx2, ry2)
+            debug_rois.append(
+                {"rect": tight_roi, "color": (255, 0, 255), "label": "tight ROI"}
+            )
 
             found, cx, cy, eparams = self.find_ellipse(
                 frame, (rx1, ry1, rx2, ry2), bottom_ratio=1.0
             )
             if found:
                 self._init_klt_points(gray, rx1, ry1, rx2, ry2)
+                self._publish_track_debug(
+                    frame,
+                    ellipse_params=eparams,
+                    rois=debug_rois,
+                    mode="tight ROI",
+                )
                 return True, cx, cy, eparams
 
         # ============================================================
@@ -924,12 +812,22 @@ class RFDetrNode(Node):
             ry1 = int(np.clip(cy - roi_h / 2, 0, h - 1))
             rx2 = int(np.clip(cx + roi_w / 2, 0, w))
             ry2 = int(np.clip(cy + roi_h / 2, 0, h))
+            expanded_roi = (rx1, ry1, rx2, ry2)
+            debug_rois.append(
+                {"rect": expanded_roi, "color": (0, 165, 255), "label": "expanded ROI"}
+            )
 
             found, cx, cy, eparams = self.find_ellipse(
                 frame, (rx1, ry1, rx2, ry2), bottom_ratio=1.0
             )
             if found:
                 self._init_klt_points(gray, rx1, ry1, rx2, ry2)
+                self._publish_track_debug(
+                    frame,
+                    ellipse_params=eparams,
+                    rois=debug_rois,
+                    mode="expanded ROI",
+                )
                 return True, cx, cy, eparams
 
         # ============================================================
@@ -938,12 +836,97 @@ class RFDetrNode(Node):
         found, cx, cy, eparams = self.find_ellipse(frame, (0, 0, w, h), bottom_ratio=1.0)
         if found:
             self._init_klt_points(gray, 0, 0, w, h)
+            debug_rois.append({"rect": (0, 0, w, h), "color": (255, 255, 0), "label": "full frame"})
+            self._publish_track_debug(
+                frame,
+                ellipse_params=eparams,
+                rois=debug_rois,
+                mode="full frame",
+            )
             return True, cx, cy, eparams
 
         # Nothing found
         self.klt_points = None
         self.prev_gray = gray
+        self._publish_track_debug(frame, rois=debug_rois, mode="lost")
         return False, None, None, None
+
+    def _publish_track_debug(self, frame, *, points=None, ellipse_params=None, rois=None, mode="", extra_text=""):
+        if self.track_debug_pub is None:
+            return
+
+        canvas = frame.copy()
+        font = cv2.FONT_HERSHEY_SIMPLEX
+
+        if rois:
+            for roi in rois:
+                rect = roi.get("rect")
+                if rect is None:
+                    continue
+                color = tuple(int(c) for c in roi.get("color", (0, 255, 255)))
+                label = roi.get("label", "")
+                x1, y1, x2, y2 = map(int, rect)
+                cv2.rectangle(canvas, (x1, y1), (x2, y2), color, 2)
+                if label:
+                    cv2.putText(
+                        canvas,
+                        label,
+                        (x1, max(0, y1 - 6)),
+                        font,
+                        0.5,
+                        color,
+                        1,
+                        cv2.LINE_AA,
+                    )
+
+        if points is not None and len(points) > 0:
+            for pt in points:
+                px, py = int(round(pt[0])), int(round(pt[1]))
+                cv2.circle(canvas, (px, py), 3, (0, 0, 255), -1)
+
+        if ellipse_params is not None:
+            center, axes, angle = ellipse_params
+            cv2.ellipse(
+                canvas,
+                (int(center[0]), int(center[1])),
+                (max(1, int(axes[0])), max(1, int(axes[1]))),
+                angle,
+                0,
+                360,
+                COL_ELLIPSE,
+                2,
+            )
+            cv2.circle(canvas, (int(center[0]), int(center[1])), 3, COL_TARGET, -1)
+
+        if mode:
+            cv2.putText(
+                canvas,
+                f"track: {mode}",
+                (10, 30),
+                font,
+                0.7,
+                (0, 200, 255),
+                2,
+                cv2.LINE_AA,
+            )
+        if extra_text:
+            cv2.putText(
+                canvas,
+                extra_text,
+                (10, 60),
+                font,
+                0.6,
+                (255, 255, 255),
+                1,
+                cv2.LINE_AA,
+            )
+
+        try:
+            self.track_debug_pub.publish(
+                self.bridge.cv2_to_imgmsg(canvas, encoding="rgb8")
+            )
+        except Exception:
+            pass
 
     def _init_klt_points(self, gray, x1, y1, x2, y2):
         roi = gray[y1:y2, x1:x2]
@@ -970,21 +953,6 @@ class RFDetrNode(Node):
         self.klt_points = pts
         self.prev_gray = gray
     
-    def _update_ellipse_motion(self, ellipse_params):
-        try:
-            center, _, _ = ellipse_params
-            cx, cy = float(center[0]), float(center[1])
-        except Exception:
-            return
-        now = time.time()
-        if self.ev_center is not None and self.ev_time is not None:
-            dt = now - self.ev_time
-            if dt > 1e-3:
-                inst_v = (np.array([cx, cy], dtype=float) - np.array(self.ev_center, dtype=float)) / dt
-                self.ev_vel = self.track_vel_alpha * self.ev_vel + (1.0 - self.track_vel_alpha) * inst_v
-        self.ev_center = (cx, cy)
-        self.ev_time = now
-
     def get_depth_at(self, depth_array, cx, cy):
         """
         Look up depth (in meters) at floating pixel coordinates.

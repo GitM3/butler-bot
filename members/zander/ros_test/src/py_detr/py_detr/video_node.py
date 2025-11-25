@@ -39,7 +39,6 @@ class VideoPublisher(Node):
         # ROS bag state
         self.reader = None
         self.bag_topics = {}
-        self.storage_options = None
 
         # RealSense bag state
         self.rs_pipeline = None
@@ -114,12 +113,15 @@ class VideoPublisher(Node):
 
     # ---------------------------- Bag playback ----------------------------- #
 
-    def _setup_bag_reader(self):
-        self.reader = SequentialReader()
-        self.storage_options = StorageOptions(uri=self.bag_path, storage_id="sqlite3")
+    def _open_bag_reader(self):
+        reader = SequentialReader()
+        storage_options = StorageOptions(uri=self.bag_path, storage_id="sqlite3")
         converter_options = ConverterOptions(input_serialization_format="", output_serialization_format="")
-        self.reader.open(self.storage_options, converter_options)
+        reader.open(storage_options, converter_options)
+        return reader
 
+    def _setup_bag_reader(self):
+        self.reader = self._open_bag_reader()
         self.bag_topics = {}
         for topic_meta in self.reader.get_all_topics_and_types():
             try:
@@ -139,22 +141,34 @@ class VideoPublisher(Node):
         )
 
     def _reset_bag_reader(self):
-        self.reader = SequentialReader()
-        converter_options = ConverterOptions(input_serialization_format="", output_serialization_format="")
-        self.reader.open(self.storage_options, converter_options)
+        try:
+            self.reader = self._open_bag_reader()
+            self.get_logger().info("Restarted ROS bag playback from the beginning")
+        except RuntimeError as exc:
+            self.get_logger().error(f"Failed to restart bag '{self.bag_path}': {exc}")
+            self.reader = None
 
     def publish_from_bag(self):
         if self.mode != "rosbag2":
             return
 
-        if not self.reader.has_next():
-            self.get_logger().info("Reached end of bag, looping...")
-            self._reset_bag_reader()
-            if not self.reader.has_next():
-                self.get_logger().error("Bag appears to contain no messages")
-                return
+        if self.reader is None:
+            return
 
-        topic, data, _ = self.reader.read_next()
+        topic = data = None
+        while self.reader is not None:
+            try:
+                topic, data, _ = self.reader.read_next()
+                break
+            except RuntimeError:
+                self.get_logger().info("Reached end of bag, restarting...")
+                self._reset_bag_reader()
+                if self.reader is None:
+                    return
+
+        if topic is None or data is None:
+            return
+
         topic_info = self.bag_topics.get(topic)
         if topic_info is None:
             return  # Topic skipped
@@ -168,6 +182,16 @@ class VideoPublisher(Node):
             raise RuntimeError(
                 "pyrealsense2 is required for RealSense .bag playback but is not installed"
             )
+        self._start_realsense_pipeline()
+        self.rs_color_pub = self.create_publisher(Image, "camera/color/image_raw", 10)
+        self.rs_depth_pub = self.create_publisher(Image, "camera/depth/image_rect_raw", 10)
+
+    def _start_realsense_pipeline(self):
+        if self.rs_pipeline is not None:
+            try:
+                self.rs_pipeline.stop()
+            except RuntimeError:
+                pass
         self.rs_pipeline = rs.pipeline()
         config = rs.config()
         try:
@@ -182,19 +206,12 @@ class VideoPublisher(Node):
         except RuntimeError:
             pass  # some firmware versions omit playback control
 
-        self.rs_color_pub = self.create_publisher(Image, "camera/color/image_raw", 10)
-        self.rs_depth_pub = self.create_publisher(Image, "camera/depth/image_rect_raw", 10)
-
     def _rewind_realsense_bag(self):
-        if not self.rs_playback:
-            return
         try:
-            self.rs_playback.pause()
-            self.rs_playback.seek(rs.time_point(0))
-            self.rs_playback.resume()
-            self.get_logger().info("Looping RealSense bag to beginning")
+            self._start_realsense_pipeline()
+            self.get_logger().info("Restarted RealSense bag playback from beginning")
         except RuntimeError as exc:
-            self.get_logger().error(f"Failed to rewind RealSense bag: {exc}")
+            self.get_logger().error(f"Failed to restart RealSense bag: {exc}")
 
     def publish_from_realsense_bag(self):
         if self.mode != "realsense" or self.rs_pipeline is None:
