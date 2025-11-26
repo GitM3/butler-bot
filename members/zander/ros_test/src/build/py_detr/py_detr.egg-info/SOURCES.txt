@@ -3,6 +3,7 @@ setup.cfg
 setup.py
 launch/py_detr.launch.py
 py_detr/__init__.py
+py_detr/debug_gui_node.py
 py_detr/rf_detr_node.py
 py_detr/tracker_node.py
 py_detr/video_node.py

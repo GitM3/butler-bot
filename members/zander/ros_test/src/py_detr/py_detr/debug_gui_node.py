@@ -18,7 +18,7 @@ from rosbag2_py import ConverterOptions, SequentialReader, StorageOptions
 from rosidl_runtime_py.utilities import get_message
 from sensor_msgs.msg import Image
 import tkinter as tk
-from tkinter import ttk
+from tkinter import filedialog, messagebox, ttk
 
 
 class DebugPlaybackNode(Node):
@@ -453,6 +453,9 @@ class DebugGuiApp:
         header.pack(fill=tk.X)
         ttk.Label(header, text=topic).pack(side=tk.LEFT, anchor=tk.W)
         ttk.Button(
+            header, text="Save", command=lambda t=topic: self._save_topic_image(t)
+        ).pack(side=tk.RIGHT, padx=2)
+        ttk.Button(
             header, text="Remove", command=lambda t=topic: self._remove_topic(t)
         ).pack(side=tk.RIGHT)
         label = tk.Label(frame, text="Waiting for image", bg="#111111", fg="#bbbbbb")
@@ -472,6 +475,30 @@ class DebugGuiApp:
             self.topic_order.remove(topic)
         self.node.remove_image_subscription(topic)
         self._relayout_topic_frames()
+
+    def _save_topic_image(self, topic: str):
+        pil_image = self.node.get_latest_image(topic)
+        if pil_image is None:
+            messagebox.showinfo("Save image", f"No image available yet for '{topic}'")
+            return
+        safe_name = topic.strip("/") or "image"
+        safe_name = safe_name.replace("/", "_")
+        filepath = filedialog.asksaveasfilename(
+            title=f"Save image from {topic}",
+            defaultextension=".png",
+            initialfile=f"{safe_name}.png",
+            filetypes=[
+                ("PNG", "*.png"),
+                ("JPEG", "*.jpg;*.jpeg"),
+                ("All files", "*.*"),
+            ],
+        )
+        if not filepath:
+            return
+        try:
+            pil_image.save(filepath)
+        except Exception as exc:  # pragma: no cover - file errors
+            messagebox.showerror("Save image", f"Failed to save image:\n{exc}")
 
     def _relayout_topic_frames(self):
         for col in range(self.max_cols):

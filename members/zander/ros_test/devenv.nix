@@ -49,6 +49,7 @@ in
         idna==3.7
         numpy
         transformers==4.57.0
+        pyrealsense2
         timm
         matplotlib
         onnxruntime>1.17
@@ -89,6 +90,8 @@ in
       gst_all_1.gst-libav
       v4l-utils # Video4Linux utilities for webcam access
 
+      libusb1
+      udev
       # --- Select ONE nixGL variant based on your GPU ---
       # nixGL.auto.nixGLDefault # Often works
       nixGL.nixGLIntel
@@ -111,6 +114,7 @@ in
           rqt-graph
           rqt-common-plugins # Useful RQT GUI tools
           rqt-tf-tree # RQT TF visualization
+          topic-tools
 
           # Camera and image processing
           image-transport
@@ -129,7 +133,8 @@ in
   enterShell = ''
     export PYTHONPATH=$PWD/install/py_detr/lib/python3.12/site-packages:$PYTHONPATH
     export PYTHONPATH=$PWD/.devenv/state/venv/lib/python3.12/site-packages:$PYTHONPATH
-    # export CMAKE_PREFIX_PATH=${pkgs.rosPackages.jazzy.cv-bridge}/share:$CMAKE_PREFIX_PATH
+    export LD_LIBRARY_PATH=${pkgs.libusb1}/lib:${pkgs.librealsense}/lib:${pkgs.systemd}/lib:$LD_LIBRARY_PATH
+
 
     if [[ ! $DIRENV_IN_ENVRC ]]; then
         eval "$(${pkgs.python3Packages.argcomplete}/bin/register-python-argcomplete ros2)"

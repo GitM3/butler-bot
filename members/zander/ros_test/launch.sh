@@ -4,4 +4,5 @@ ros2 launch realsense2_camera rs_launch.py
 ros2 run dynamixel_sdk_examples realsense_pitch --ros-args --params-file /home/jetson/BUTLER_BOT/members/zander/ros_test/src/dynamix/realsense_pitch/dynamixel_sdk_examples/config/realsense_pitch.yaml
 
 # For Testing
-#  ros2 launch realsense2_camera rs_launch.py rosbag_filename:=/home/zander/Development/butler-bot/members/zander/ros_test/test.bag enable_color:=true color_fps:=1 enable_depth:=true depth_fps:=1
+#  ros2 launch realsense2_camera rs_launch.py rosbag_filename:=/home/zander/Development/butler-bot/members/zander/ros_test/test.bag
+#  ros2 run py_detr video_node --ros-args -p bag_path:=/home/zander/Development/butler-bot/members/zander/ros_test/test.bag -p frame_rate:=1.0
