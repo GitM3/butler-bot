@@ -29,10 +29,7 @@ class DebugPlaybackNode(Node):
 
         self.declare_parameter("bag_path", "")
         self.declare_parameter("frame_rate", 10.0)
-        self.declare_parameter(
-            "display_topics",
-            ["camera/color/image_raw", "camera/depth/image_rect_raw"],
-        )
+        self.declare_parameter("display_topics", [])
 
         raw_bag_path = self.get_parameter("bag_path").get_parameter_value().string_value
         self.bag_path = self._expand_path(raw_bag_path)
@@ -42,10 +39,7 @@ class DebugPlaybackNode(Node):
         display_topics_param = (
             self.get_parameter("display_topics").get_parameter_value().string_array_value
         )
-        self.display_topics = list(display_topics_param) or [
-            "camera/color/image_raw",
-            "camera/depth/image_rect_raw",
-        ]
+        self.display_topics = list(display_topics_param)
 
         if not self.bag_path:
             raise RuntimeError("The 'bag_path' parameter is required for debug_gui_node")
@@ -63,6 +57,7 @@ class DebugPlaybackNode(Node):
         self.bag_lock = threading.Lock()
         self._latest_images: Dict[str, PILImage.Image] = {}
         self._image_lock = threading.Lock()
+        self._image_subscriptions: Dict[str, object] = {}
 
         # Playback thread coordination
         self._play_event = threading.Event()
@@ -71,12 +66,8 @@ class DebugPlaybackNode(Node):
         self._playback_thread.start()
 
         # Subscriptions for preview grid
-        self._subscriptions = []
         for topic in self.display_topics:
-            sub = self.create_subscription(
-                Image, topic, self._make_image_callback(topic), 10
-            )
-            self._subscriptions.append(sub)
+            self.ensure_image_subscription(topic)
 
         # Prepare bag handling components
         if self._is_rosbag2_dir(self.bag_path):
@@ -141,6 +132,45 @@ class DebugPlaybackNode(Node):
             if img is None:
                 return None
             return img.copy()
+
+    def ensure_image_subscription(self, topic: str) -> bool:
+        topic = (topic or "").strip()
+        if not topic:
+            return False
+        if topic in self._image_subscriptions:
+            return True
+        sub = self.create_subscription(Image, topic, self._make_image_callback(topic), 10)
+        self._image_subscriptions[topic] = sub
+        return True
+
+    def remove_image_subscription(self, topic: str):
+        sub = self._image_subscriptions.pop(topic, None)
+        if sub is not None:
+            try:
+                self.destroy_subscription(sub)
+            except AttributeError:
+                pass
+        with self._image_lock:
+            self._latest_images.pop(topic, None)
+
+    def get_available_image_topics(self):
+        topics = set()
+        if self.mode == "rosbag2" and self.bag_topics:
+            topics.update(self.bag_topics.keys())
+        elif self.mode == "realsense":
+            topics.update(
+                [
+                    "camera/color/image_raw",
+                    "camera/depth/image_rect_raw",
+                ]
+            )
+        try:
+            for name, type_list in self.get_topic_names_and_types():
+                if any(t == "sensor_msgs/msg/Image" for t in type_list):
+                    topics.add(name)
+        except RuntimeError:
+            pass
+        return sorted(topics)
 
     # ---------------------------- Bag playback --------------------------- #
 
@@ -314,6 +344,12 @@ class DebugPlaybackNode(Node):
         self._play_event.set()
         if self._playback_thread.is_alive():
             self._playback_thread.join(timeout=1.0)
+        for sub in list(self._image_subscriptions.values()):
+            try:
+                self.destroy_subscription(sub)
+            except AttributeError:
+                pass
+        self._image_subscriptions.clear()
         if self.reader is not None:
             self.reader = None
         if self.rs_pipeline is not None:
@@ -333,20 +369,40 @@ class DebugGuiApp:
         self.root.title("py_detr debug GUI")
         self.root.protocol("WM_DELETE_WINDOW", self._on_close)
         self._photo_refs: Dict[str, ImageTk.PhotoImage] = {}
+        self._topic_choices = []
+        self.image_labels: Dict[str, tk.Label] = {}
+        self.topic_frames: Dict[str, ttk.Frame] = {}
+        self.topic_order = []
+        self.max_cols = 2
 
         controls = ttk.Frame(self.root)
         controls.pack(fill=tk.X, padx=8, pady=4)
 
-        ttk.Button(controls, text="Step", command=self._step_once).pack(side=tk.LEFT, padx=2)
-        ttk.Button(controls, text="Play", command=self.node.start_playback).pack(
+        playback_bar = ttk.Frame(controls)
+        playback_bar.pack(fill=tk.X, pady=2)
+        ttk.Button(playback_bar, text="Step", command=self._step_once).pack(side=tk.LEFT, padx=2)
+        ttk.Button(playback_bar, text="Play", command=self.node.start_playback).pack(
             side=tk.LEFT, padx=2
         )
-        ttk.Button(controls, text="Pause", command=self.node.pause_playback).pack(
+        ttk.Button(playback_bar, text="Pause", command=self.node.pause_playback).pack(
             side=tk.LEFT, padx=2
         )
 
         self.status_var = tk.StringVar(value=self.node.describe_playback_state())
-        ttk.Label(controls, textvariable=self.status_var).pack(side=tk.RIGHT)
+        ttk.Label(playback_bar, textvariable=self.status_var).pack(side=tk.RIGHT)
+
+        topic_bar = ttk.Frame(controls)
+        topic_bar.pack(fill=tk.X, pady=2)
+        ttk.Label(topic_bar, text="Image topic:").pack(side=tk.LEFT)
+        self.topic_var = tk.StringVar()
+        self.topic_combo = ttk.Combobox(
+            topic_bar, textvariable=self.topic_var, width=50, state="readonly"
+        )
+        self.topic_combo.pack(side=tk.LEFT, fill=tk.X, expand=True, padx=4)
+        self.add_topic_button = ttk.Button(
+            topic_bar, text="Add Topic", command=self._add_selected_topic
+        )
+        self.add_topic_button.pack(side=tk.LEFT, padx=2)
 
         notebook = ttk.Notebook(self.root)
         notebook.pack(fill=tk.BOTH, expand=True, padx=8, pady=8)
@@ -354,32 +410,102 @@ class DebugGuiApp:
         main_tab = ttk.Frame(notebook)
         notebook.add(main_tab, text="Main")
 
-        self.image_labels: Dict[str, tk.Label] = {}
-        max_cols = 2
-        for idx, topic in enumerate(self.node.display_topics):
-            row = idx // max_cols
-            col = idx % max_cols
-            frame = ttk.Frame(main_tab, padding=4, relief=tk.GROOVE)
-            frame.grid(row=row, column=col, sticky="nsew", padx=4, pady=4)
-            main_tab.grid_columnconfigure(col, weight=1)
-            ttk.Label(frame, text=topic).pack(anchor=tk.W)
-            label = tk.Label(frame, text="Waiting for image", bg="#111111", fg="#bbbbbb")
-            label.pack(fill=tk.BOTH, expand=True)
-            self.image_labels[topic] = label
+        self.canvas = tk.Canvas(main_tab, highlightthickness=0)
+        self.canvas.pack(side=tk.LEFT, fill=tk.BOTH, expand=True)
+        self.scrollbar = ttk.Scrollbar(main_tab, orient="vertical", command=self.canvas.yview)
+        self.scrollbar.pack(side=tk.RIGHT, fill=tk.Y)
+        self.canvas.configure(yscrollcommand=self.scrollbar.set)
+
+        self.grid_container = ttk.Frame(self.canvas)
+        self.canvas_frame = self.canvas.create_window((0, 0), window=self.grid_container, anchor="nw")
+        self.grid_container.bind(
+            "<Configure>",
+            lambda event: self.canvas.configure(scrollregion=self.canvas.bbox("all")),
+        )
+        self.canvas.bind(
+            "<Configure>",
+            lambda event: self.canvas.itemconfigure(self.canvas_frame, width=event.width),
+        )
+
+        for topic in self.node.display_topics:
+            self._add_topic_frame(topic)
 
         notebook.enable_traversal()
         self.root.after(200, self._refresh_images)
         self.root.after(200, self._refresh_status)
+        self._refresh_topic_choices()
 
     def _step_once(self):
         self.node.publish_next_frame()
+
+    def _add_selected_topic(self):
+        topic = (self.topic_var.get() or "").strip()
+        if topic:
+            self._add_topic_frame(topic)
+
+    def _add_topic_frame(self, topic: str):
+        if topic in self.topic_frames:
+            return
+        if not self.node.ensure_image_subscription(topic):
+            return
+        frame = ttk.Frame(self.grid_container, padding=4, relief=tk.GROOVE)
+        header = ttk.Frame(frame)
+        header.pack(fill=tk.X)
+        ttk.Label(header, text=topic).pack(side=tk.LEFT, anchor=tk.W)
+        ttk.Button(
+            header, text="Remove", command=lambda t=topic: self._remove_topic(t)
+        ).pack(side=tk.RIGHT)
+        label = tk.Label(frame, text="Waiting for image", bg="#111111", fg="#bbbbbb")
+        label.pack(fill=tk.BOTH, expand=True, pady=(4, 0))
+        self.topic_frames[topic] = frame
+        self.image_labels[topic] = label
+        self.topic_order.append(topic)
+        self._relayout_topic_frames()
+
+    def _remove_topic(self, topic: str):
+        frame = self.topic_frames.pop(topic, None)
+        if frame is not None:
+            frame.destroy()
+        self.image_labels.pop(topic, None)
+        self._photo_refs.pop(topic, None)
+        if topic in self.topic_order:
+            self.topic_order.remove(topic)
+        self.node.remove_image_subscription(topic)
+        self._relayout_topic_frames()
+
+    def _relayout_topic_frames(self):
+        for col in range(self.max_cols):
+            self.grid_container.grid_columnconfigure(col, weight=1)
+        for idx, topic in enumerate(self.topic_order):
+            frame = self.topic_frames.get(topic)
+            if frame is None:
+                continue
+            row = idx // self.max_cols
+            col = idx % self.max_cols
+            frame.grid(row=row, column=col, sticky="nsew", padx=4, pady=4)
 
     def _refresh_status(self):
         self.status_var.set(self.node.describe_playback_state())
         self.root.after(500, self._refresh_status)
 
+    def _refresh_topic_choices(self):
+        topics = self.node.get_available_image_topics()
+        if topics != self._topic_choices:
+            self.topic_combo.configure(values=topics)
+            self._topic_choices = list(topics)
+        if topics:
+            if self.topic_var.get() not in topics:
+                self.topic_var.set(topics[0])
+            self.topic_combo.configure(state="readonly")
+            self.add_topic_button.configure(state=tk.NORMAL)
+        else:
+            self.topic_var.set("")
+            self.topic_combo.configure(state="disabled")
+            self.add_topic_button.configure(state=tk.DISABLED)
+        self.root.after(1500, self._refresh_topic_choices)
+
     def _refresh_images(self):
-        for topic, label in self.image_labels.items():
+        for topic, label in list(self.image_labels.items()):
             pil_image = self.node.get_latest_image(topic)
             if pil_image is None:
                 continue

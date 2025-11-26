@@ -33,6 +33,7 @@ setup(
             f"video_node = {package_name}.video_node:main",
             f"rfdetr_node = {package_name}.rf_detr_node:main",
             f"tracker_node = {package_name}.tracker_node:main",
+            f"debug_gui_node = {package_name}.debug_gui_node:main",
         ],
     },
 )
