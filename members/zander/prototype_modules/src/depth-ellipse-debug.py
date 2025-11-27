@@ -29,7 +29,7 @@ def find_ellipse_from_masked_rgb(mask, rgb):
     c1  = cv2.getTrackbarPos("c1", window)
     c2  = cv2.getTrackbarPos("c2", window)
     edges = cv2.Canny(gray_blur, c1, c2)
-
+    
     edges = cv2.bitwise_and(edges, edges, mask=mask)
 
     contours, _ = cv2.findContours(edges, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
@@ -46,7 +46,7 @@ def find_ellipse_from_masked_rgb(mask, rgb):
             continue
 
         ellipse = cv2.fitEllipse(c)
-
+        print(ellipse)
         if area > best_area:
             best_area = area
             best_ellipse = ellipse
@@ -59,6 +59,37 @@ def draw_ellipse(img, ellipse, color=(0,255,0), thickness=2):
     output = img.copy()
     cv2.ellipse(output, ellipse, color, thickness)
     return output
+
+kf = cv2.KalmanFilter(4,2) # cx,cy,dxc,dcy;cx,cy
+dt = 1.0/30.0
+kf.transitionMatrix = np.array([[1, 0, dt, 0],
+                                [0, 1, 0, dt],
+                                [0, 0, 1, 0],
+                                [0, 0, 0, 1]], dtype=np.float32)
+
+kf.measurementMatrix = np.array([[1, 0, 0, 0],
+                                 [0, 1, 0, 0]], dtype=np.float32)
+
+kf.processNoiseCov = np.eye(4, dtype=np.float32) * 1e-2
+kf.measurementNoiseCov = np.eye(2, dtype=np.float32) * 1e-1
+kf.errorCovPost = np.eye(4, dtype=np.float32) * 1
+
+def init_kf(cx,cy,dcx,dcy):
+    kf.init(4,2)
+    kf.statePre = np.array([[cx],[cy],[dcx],[dcy]])
+
+def kf_pred(ellipse):
+    pred = kf.predict()
+    px, py = int(pred[0]), int(pred[1])
+    if ellipse is not None:
+        cx, cy = ellipse[0] 
+        meas = np.array([[cx], [cy]], dtype=np.float32)
+        kf.correct(meas) 
+        tracked_x, tracked_y = int(cx), int(cy)
+    else:
+        tracked_x, tracked_y = px, py
+    return (tracked_x,tracked_y)
+
 
 try:
     while True:
@@ -86,7 +117,11 @@ try:
         mask_3ch = cv2.cvtColor(mask, cv2.COLOR_GRAY2BGR)
         ellipse = find_ellipse_from_masked_rgb(mask, color_image)
 
+        tracked_x,tracked_y = kf_pred(ellipse)
         vis = draw_ellipse(color_image, ellipse)
+        cv2.circle(vis, (tracked_x, tracked_y), 5, (0, 0, 255), -1)
+        cv2.putText(vis, "KF", (tracked_x+8, tracked_y-8),cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0,0,255), 1)
+
         cv2.imshow("Overlay", vis)
         overlay = cv2.addWeighted(color_image, 1 - alpha, mask_3ch, alpha, 0)
         images = np.hstack((vis, overlay))
