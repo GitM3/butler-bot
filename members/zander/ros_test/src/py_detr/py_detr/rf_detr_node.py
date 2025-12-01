@@ -168,10 +168,11 @@ class RFDetrNode(Node):
         self.bridge = CvBridge()
         self.image_pub = self.create_publisher(Image, "/camera/annotated", 10)
         self.target_pub = self.create_publisher(Float64MultiArray, "/target/center", 10)
-        self.track_debug_pub = self.create_publisher(Image, "/ellipse/track_debug", 1)
-        self.find_debug_pub = self.create_publisher(Image, "/ellipse/find_debug", 1)
         self.find_mask_pub = self.create_publisher(Image, "/ellipse/find_mask", 1)
-
+        self.find_debug_pub   = self.create_publisher(Image, "/ellipse/find_debug", 1)
+        self.find_debug_edges_pub   = self.create_publisher(Image, "/ellipse/find_debug_edges", 1)
+        self.find_debug_bdetect_pub = self.create_publisher(Image, "/ellipse/find_debug_bdetect", 1)
+        self.find_debug_masked_pub  = self.create_publisher(Image, "/ellipse/find_debug_masked", 1)
 
         filter_labels = ["cup", "bottle", "wine glass"]
         self.target_labels = [i for i, n in COCO_CLASSES.items() if n in filter_labels]
@@ -343,7 +344,7 @@ class RFDetrNode(Node):
         kernel = cv2.getStructuringElement(cv2.MORPH_ELLIPSE,(self.mask_kernel_size,self.mask_kernel_size))
         expanded_mask = cv2.dilate(init_depth_mask, kernel, iterations=1)
 
-        ellipse = self.find_ellipse(expanded_mask, frame)
+        ellipse = self.find_ellipse(expanded_mask, frame, det_bbox)
         ellipse_found_raw = ellipse is not None
 
         # Debounce ellipse
@@ -475,42 +476,114 @@ class RFDetrNode(Node):
 
         return None
 
-    def find_ellipse(self,mask, rgb):
-        masked = cv2.bitwise_and(rgb, rgb, mask=mask)
-        gray = cv2.cvtColor(masked, cv2.COLOR_BGR2GRAY)
+    def find_ellipse(self, mask, rgb, det_bbox=None):
+        """
+        Finds best ellipse; also publishes debug images so we can diagnose failure.
+        """
+
+        # ------------------------------
+        # 1. Build masked image
+        # ------------------------------
+        masked_rgb = cv2.bitwise_and(rgb, rgb, mask=mask)
+
+        # ------------------------------
+        # 2. Canny edges
+        # ------------------------------
+        gray = cv2.cvtColor(masked_rgb, cv2.COLOR_BGR2GRAY)
         gray_blur = cv2.GaussianBlur(gray, (5, 5), 0)
         edges = cv2.Canny(gray_blur, self.ellipse_canny_low, self.ellipse_canny_high)
-        edges = cv2.bitwise_and(edges, edges, mask=mask)
+        edges_masked = cv2.bitwise_and(edges, edges, mask=mask)
 
-        contours, _ = cv2.findContours(edges, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
+        # Publish Canny edges debug
+        edges_rgb = cv2.cvtColor(edges_masked, cv2.COLOR_GRAY2RGB)
+        self.find_debug_edges_pub.publish(self.bridge.cv2_to_imgmsg(edges_rgb, "rgb8"))
+
+        # ------------------------------
+        # 3. Optional bounding-box gate
+        # ------------------------------
+        if det_bbox is not None:
+            x1, y1, x2, y2 = det_bbox.astype(float)
+            w = x2 - x1
+            h = y2 - y1
+
+            margin_x = 0.10 * w
+            margin_y = 0.10 * h
+
+            bx1 = int(max(0, x1 - margin_x))
+            by1 = int(max(0, y1 - margin_y))
+            bx2 = int(min(rgb.shape[1]-1, x2 + margin_x))
+            by2 = int(min(rgb.shape[0]-1, y2 + margin_y))
+
+            # Create bounding-gate mask
+            bdetect = np.zeros_like(edges_masked, dtype=np.uint8)
+            cv2.rectangle(bdetect, (bx1, by1), (bx2, by2), 255, -1)
+        else:
+            # Allow entire area if no detection
+            bdetect = np.ones_like(edges_masked, dtype=np.uint8) * 255
+
+        # Publish bounding box gating mask
+        bdetect_rgb = cv2.cvtColor(bdetect, cv2.COLOR_GRAY2RGB)
+        self.find_debug_bdetect_pub.publish(self.bridge.cv2_to_imgmsg(bdetect_rgb, "rgb8"))
+
+        # ------------------------------
+        # 4. Combine masks for debugging
+        # ------------------------------
+        combined_debug = cv2.bitwise_and(edges_rgb, edges_rgb, mask=bdetect)
+        self.find_debug_masked_pub.publish(self.bridge.cv2_to_imgmsg(combined_debug, "rgb8"))
+
+        # ------------------------------
+        # 5. Contour detection
+        # ------------------------------
+        contours, _ = cv2.findContours(edges_masked, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
 
         best_ellipse = None
         best_area = 0
 
+        dbg = rgb.copy()  # draw contours for debugging
+
         for c in contours:
+            # Draw contour in debug view
+            cv2.drawContours(dbg, [c], -1, (0, 0, 255), 1)
+
             if len(c) < 5:
                 continue
 
             area = cv2.contourArea(c)
-            if area < 200:     # reject small/noisy
+            if area < 200:
                 continue
 
             ellipse = cv2.fitEllipse(c)
-            x,y = ellipse[0]
-            d_prev = 0
+            (cx, cy), (A, B), ang = ellipse
+
+            # Enforce bounding box gating
+            if det_bbox is not None:
+                if not (bx1 <= cx <= bx2 and by1 <= cy <= by2):
+                    cv2.circle(dbg, (int(cx), int(cy)), 4, (0, 255, 255), -1)
+                    continue
+
+            # Previous ellipse stability check
             if self.prev_ellipse is not None:
-                px,py = self.prev_ellipse[0]
-                d_prev = np.sqrt((px-x)**2 + (py-y)**2)
-                _, (pA, pB), pAng = self.prev_ellipse
-                _, (A, B), ang   = ellipse
+                (px, py), (pA, pB), pAng = self.prev_ellipse
+                d_prev = np.hypot(px - cx, py - cy)
 
-                if abs(A - pA) > 0.4*pA: continue
-                if abs(B - pB) > 0.4*pB: continue
-                if abs(ang - pAng) > 30: continue
+                if d_prev > 50:
+                    continue
+                if abs(A - pA) > 0.4 * pA:
+                    continue
+                if abs(B - pB) > 0.4 * pB:
+                    continue
+                if abs(ang - pAng) > 30:
+                    continue
 
-            if area > best_area and d_prev < 50:
+            # If we reached here → accept candidate
+            if area > best_area:
                 best_area = area
                 best_ellipse = ellipse
+                # Draw accepted ellipse in green
+                cv2.ellipse(dbg, ellipse, (0, 255, 0), 2)
+
+        # Publish debugging overlay
+        self.find_debug_pub.publish(self.bridge.cv2_to_imgmsg(dbg, "rgb8"))
 
         return best_ellipse
 
