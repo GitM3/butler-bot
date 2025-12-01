@@ -166,13 +166,12 @@ class RFDetrNode(Node):
         self.model_path = self.get_parameter("model_path").get_parameter_value().string_value
 
         self.bridge = CvBridge()
-        
-
         self.image_pub = self.create_publisher(Image, "/camera/annotated", 10)
         self.target_pub = self.create_publisher(Float64MultiArray, "/target/center", 10)
+        self.track_debug_pub = self.create_publisher(Image, "/ellipse/track_debug", 1)
         self.find_debug_pub = self.create_publisher(Image, "/ellipse/find_debug", 1)
         self.find_mask_pub = self.create_publisher(Image, "/ellipse/find_mask", 1)
-        self.track_debug_pub = self.create_publisher(Image, "/ellipse/track_debug", 1)
+
 
         filter_labels = ["cup", "bottle", "wine glass"]
         self.target_labels = [i for i, n in COCO_CLASSES.items() if n in filter_labels]
@@ -192,31 +191,38 @@ class RFDetrNode(Node):
         self.get_logger().info(
             f"Tracking TARGET_CLASS='{self.target_class_name}' (id={self.target_class_id})"
         )
-        self.declare_parameter("depth_scale", 0.001)
+        self.declare_parameter("depth_scale", 1.0)
         self.depth_scale = (
             self.get_parameter("depth_scale").get_parameter_value().double_value
         )
 
         self.model = RFDETR_ONNX(self.model_path)
-        self.prev_t = time.time()
         self.state = State.DETECT
-        self.depth_threshold = 2   # meters — adjust as needed
-        self.last_ellipse_bbox = None
-        now = time.time()
-        self.last_seen_object_time = now
-        self.last_seen_ellipse_time = now
-        self.depth_array = None
+        
+        self.prev_t = time.time()
+        self.prev_ellipse = None
         self.prev_gray = None
+        self.good_detect_kf = 0
+        self.good_ellipse_kf = 0
+        self.detect_yes = 0
+        self.detect_no = 0
+        self.DETECT_YES_THRESH = 3   # 3 stable frames = object confirmed
+        self.DETECT_NO_THRESH  = 5
+        self.ellipse_yes = 0
+        self.ellipse_no = 0
+        self.ELLIPSE_YES_THRESH = 3
+        self.ELLIPSE_NO_THRESH  = 5
         # Ellipse search tuning
         self.declare_parameter("ellipse_bottom_ratio", 0.4)
         self.declare_parameter("ellipse_depth_margin", 0.04)
         self.declare_parameter("ellipse_canny_low", 25.0)
-        self.declare_parameter("ellipse_canny_high", 80.0)
+        self.declare_parameter("ellipse_canny_high", 100.0)
         self.declare_parameter("ellipse_min_contour_area", 150.0)
         self.declare_parameter("ellipse_min_mask_pixels", 80.0)
         self.declare_parameter("mask_kernel_size", 50)
-        self.declare_parameter("depth_threshold", 2.0)
+        self.declare_parameter("depth_threshold", 1500.0)
         self.declare_parameter("bag_path", "")
+        self.declare_parameter("frame_rate", 20.0)
 
         self.ellipse_bottom_ratio = float(self.get_parameter("ellipse_bottom_ratio").get_parameter_value().double_value)
         self.ellipse_depth_margin = float(self.get_parameter("ellipse_depth_margin").get_parameter_value().double_value)
@@ -227,8 +233,27 @@ class RFDetrNode(Node):
         self.depth_threshold = float(self.get_parameter("depth_threshold").get_parameter_value().double_value)
         self.mask_kernel_size = int(self.get_parameter("mask_kernel_size").get_parameter_value().integer_value)
         self.bag_path = self.get_parameter("bag_path").get_parameter_value().string_value
+        self.frame_rate = float(self.get_parameter("frame_rate").get_parameter_value().double_value)
         self.target_ellipse_keyframes = 0 # Keyframes of good target ellipse pairs.
-        self.timer = self.create_timer(1/30.0, self.callback)  # 30Hz
+        self.timer = self.create_timer(1/self.frame_rate, self.callback)  
+
+        self.kf = cv2.KalmanFilter(5*2,5) # cx,cy,ma,mi,an
+        dt = 1.0/self.frame_rate
+        mat_i  = np.eye(5, dtype=np.float32)
+        mat_dt = mat_i * dt
+
+        A = np.zeros((10, 10), dtype=np.float32)
+        A[0:5, 0:5] = mat_i
+        A[0:5, 5:10] = mat_dt
+        A[5:10, 5:10] = mat_i
+        self.kf.transitionMatrix = A
+
+        H = np.zeros((5,10), dtype=np.float32)
+        H[0:5,0:5] = mat_i
+        self.kf.measurementMatrix = H
+        self.kf.processNoiseCov = np.eye(10, dtype=np.float32) * 1e-2
+        self.kf.measurementNoiseCov = np.eye(5, dtype=np.float32) * 1e-1
+        self.kf.errorCovPost = np.eye(10, dtype=np.float32) * 1
 
         self.pipeline = rs.pipeline()
         self.config = rs.config()
@@ -240,9 +265,33 @@ class RFDetrNode(Node):
             self.config.enable_stream(rs.stream.color, 640, 480, rs.format.bgr8, 30)
 
         self.align = rs.align(rs.stream.color)
-
         self.pipeline.start(self.config)
+        if self.bag_path != "":
+            self.device = self.pipeline.get_active_profile().get_device()
+            self.device.as_playback().set_real_time(False)
         self.get_logger().info("✅ BB Detector ready")
+
+    def kf_reset(self):
+        self.kf.errorCovPost = np.eye(10, dtype=np.float32) * 1
+
+    def kf_predict(self):
+        pred = self.kf.predict()
+        px, py          = float(pred[0]), float(pred[1])
+        p_major         = float(pred[2])
+        p_minor         = float(pred[3])
+        p_angle_deg     = float(pred[4])
+
+        return ((px, py), (p_major, p_minor), p_angle_deg)
+    def kf_step(self,ellipse):
+        tracked_ellipse = self.kf_predict()
+        if ellipse is not None:
+            (cx, cy), (major, minor), angle_deg = ellipse
+            meas = np.array(
+                [[cx], [cy], [major], [minor], [angle_deg]],
+                dtype=np.float32
+            )
+            self.kf.correct(meas)
+        return tracked_ellipse
 
     def callback(self):
         frames = self.pipeline.wait_for_frames()
@@ -256,111 +305,146 @@ class RFDetrNode(Node):
             return
 
         depth_image = np.asanyarray(depth_frame.get_data())      # uint16 depth in mm
-        frame = np.asanyarray(color_frame.get_data())      # RGB aligned to depth
-
+        frame = np.asanyarray(color_frame.get_data())            # RGB aligned to depth
 
         annotated = frame.copy()
-        current_time = time.time()
 
-        detections, boxes, scores, labels = self.detect_objects(frame, self.depth_array)
-        target_detection = next(
-            (det for det in detections if det["class_id"] == self.target_class_id),
-            None,
-        )
-        object_detected = target_detection is not None
+        detections, boxes, scores, labels = self.detect_objects(frame, depth_image)
+        target_detection = next((d for d in detections if d["class_id"] == self.target_class_id), None)
 
-        det_cx = det_cy = det_depth = None
-        det_bbox = None
+        object_detected_raw = target_detection is not None
+
+        if object_detected_raw:
+            self.detect_yes += 1
+            self.detect_no = 0
+        else:
+            self.detect_no += 1
+            self.detect_yes = 0
+
+        object_detected_stable = (self.detect_yes >= self.DETECT_YES_THRESH)
+        object_lost_stable     = (self.detect_no  >= self.DETECT_NO_THRESH)
+
+        det_bbox = det_center = det_depth = None
         if target_detection:
-            det_cx, det_cy = target_detection["center"]
-            det_depth = target_detection["depth"]
-            det_bbox = target_detection["bbox"]
-        tracked_ellipse_detection = None
+            det_center = target_detection["center"]
+            det_depth  = target_detection["depth"]
+            det_bbox   = target_detection["bbox"]
+
+            cx, cy = det_center
+            cv2.circle(annotated, (int(cx),int(cy)), 4, COL_TARGET, -1)
 
         for box in boxes:
-            x1, y1, x2, y2 = box.astype(int)
-            cv2.rectangle(annotated, (x1, y1), (x2, y2), COL_WHITE, 2)
+            x1,y1,x2,y2 = box.astype(int)
+            cv2.rectangle(annotated, (x1,y1), (x2,y2), COL_WHITE, 2)
 
-        if det_cx is not None and det_cy is not None:
-            cv2.circle(annotated, (int(det_cx), int(det_cy)), 4, COL_TARGET, -1)
 
-        KF_THRESHOLD = 5
-        ELLIPSE_LOST_THRESHOLD = 0.50
+        # Ellipse stuff
+        init_depth_mask = ((depth_image > 0) & (depth_image <= self.depth_threshold)).astype(np.uint8)*255
+        kernel = cv2.getStructuringElement(cv2.MORPH_ELLIPSE,(self.mask_kernel_size,self.mask_kernel_size))
+        expanded_mask = cv2.dilate(init_depth_mask, kernel, iterations=1)
 
-        if object_detected:
-            self.last_seen_object_time = current_time
-            self.last_bbox = det_bbox
+        ellipse = self.find_ellipse(expanded_mask, frame)
+        ellipse_found_raw = ellipse is not None
 
-        ellipse_found = False
-        e_cx = e_cy = None
-        ellipse_params = None
+        # Debounce ellipse
+        if ellipse_found_raw:
+            self.ellipse_yes += 1
+            self.ellipse_no = 0
+        else:
+            self.ellipse_no += 1
+            self.ellipse_yes = 0
 
+        ellipse_found_stable = (self.ellipse_yes >= self.ELLIPSE_YES_THRESH)
+        ellipse_lost_stable  = (self.ellipse_no  >= self.ELLIPSE_NO_THRESH)
+
+
+        # Debug publish find mask + overlay
+        find_mask_rgb = cv2.cvtColor(expanded_mask, cv2.COLOR_GRAY2RGB)
+        if ellipse is not None:
+            cv2.ellipse(find_mask_rgb, ellipse, (0,255,0), 2)
+        self.find_mask_pub.publish(self.bridge.cv2_to_imgmsg(find_mask_rgb, "rgb8"))
+
+
+        # =====================================================
+        # STATE: DETECT
+        # =====================================================
         if self.state == State.DETECT:
-                #self.get_logger().info(f"Object found at [{det_cx,det_cy,det_depth}]")
-                if object_detected and det_depth is not None and det_depth < self.depth_threshold:
-                    self.state = State.ELLIPSE_SEARCH
-                    self.get_logger().info("STATE → ELLIPSE_SEARCH")
-                    self.target_ellipse_keyframes = 0
-        elif self.state == State.ELLIPSE_SEARCH:
-            init_mask = ((depth_image > 0) & (depth_image <=self.depth_threshold)).astype(np.uint8) * 255
-            kernel = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (self.mask_kernel_size,self.mask_kernel_size))
-            mask = cv2.dilate(init_mask, kernel, iterations=1)
-            ellipse = self.find_ellipse(mask, frame)
-            ellipse_found = ellipse is not None
-            annotated = self.draw_ellipse(frame,ellipse)
 
-            if object_detected:
-                if ellipse_found:
-                    self.last_seen_ellipse_time = current_time
-                    self.target_ellipse_keyframes += 1
-            else:
-                if self.target_ellipse_keyframes < KF_THRESHOLD:
-                    self.state = State.DETECT
-                    self.get_logger().info("STATE → DETECT (bad init)")
-        elif self.state == State.ELLIPSE_TRACK:
-            if object_detected:
-                    self.state = State.DETECT
-                    self.last_ellipse_bbox = None
-                    self.get_logger().info("STATE → DETECT")
-            ellipse_lost_time = (
-                current_time - self.last_seen_ellipse_time
-                if self.last_seen_ellipse_time is not None
-                else float("inf")
-            )
-            # Lost ellipse for too long → back to DETECT
-            if ellipse_lost_time > ELLIPSE_LOST_THRESHOLD:
+            if object_detected_stable and (det_depth is not None) and det_depth <= self.depth_threshold:
+                self.state = State.ELLIPSE_SEARCH
+                self.get_logger().info("STATE → ELLIPSE_SEARCH")
+                self.kf_reset()
+                self.prev_ellipse = None
+                self.ellipse_yes = self.ellipse_no = 0
+
+        # =====================================================
+        # STATE: ELLIPSE_SEARCH
+        # =====================================================
+        elif self.state == State.ELLIPSE_SEARCH:
+
+            # Draw current ellipse (not stable yet)
+            if ellipse is not None:
+                annotated = self.draw_ellipse(annotated, ellipse, color=(255,0,0))
+
+            # Losing object BEFORE ellipse is confirmed → go back
+            if object_lost_stable and not ellipse_found_stable:
+                self.get_logger().info("STATE → DETECT (lost before confirming ellipse)")
                 self.state = State.DETECT
-                self.last_ellipse_bbox = None
-                self.get_logger().info("STATE → DETECT")
+
+            # Ellipse confirmed AND object lost → go to TRACK
+            elif ellipse_found_stable and object_lost_stable:
+                self.prev_ellipse = ellipse
+                self.get_logger().info("STATE → ELLIPSE_TRACK (ellipse confirmed)")
+                self.state = State.ELLIPSE_TRACK
+
+            # If ellipse is found, correct KF for stabilizing angles etc.
+            if ellipse_found_raw:
+                self.prev_ellipse = ellipse
+                tracked_ellipse = self.kf_step(ellipse)
+                annotated = self.draw_ellipse(annotated, tracked_ellipse, color=(0,0,255))
+
+        # =====================================================
+        # STATE: ELLIPSE_TRACK
+        # =====================================================
+        elif self.state == State.ELLIPSE_TRACK:
+
+            # If object resurfaces, abandon ellipse tracking
+            if object_detected_stable:
+                self.get_logger().info("STATE → DETECT (object back in view)")
+                self.state = State.DETECT
+
+            # Step 1: Try direct ellipse detection
+            tracked_ellipse = self.kf_predict()
+            if ellipse is None:
+                # Try fallback: grow region around prev + predicted ellipse
+                ellipse = self.fallback_ellipse_search(frame, tracked_ellipse)
+
+            # If ellipse still not found → tracking failed
+            if ellipse is None:
+                if ellipse_lost_stable:
+                    self.get_logger().info("STATE → DETECT (ellipse lost)")
+                    self.state = State.DETECT
+            else:
+                # Update and draw
+                self.prev_ellipse = ellipse
+                tracked_ellipse = self.kf_step(ellipse)
+                annotated = self.draw_ellipse(annotated, ellipse, color=(255,0,0))
+                annotated = self.draw_ellipse(annotated, tracked_ellipse, color=(0,0,255))
+
+            track_dbg = self.draw_ellipse(frame, tracked_ellipse, (0,255,255))
+            self.track_debug_pub.publish(self.bridge.cv2_to_imgmsg(track_dbg,"rgb8"))
 
         now = time.time()
-        fps = 1.0 / (now - self.prev_t)
+        fps = 1.0/(now - self.prev_t)
         self.prev_t = now
 
-        cv2.putText(
-            annotated,
-            f"FPS: {fps:.1f}",
-            (10, 25),
-            cv2.FONT_HERSHEY_SIMPLEX,
-            0.8,
-            COL_WHITE,
-            2,
-        )
-        cv2.putText(
-            annotated,
-            "S: " +STATES[self.state.value],
-            (120, 25),
-            cv2.FONT_HERSHEY_SIMPLEX,
-            0.8,
-            COL_WHITE,
-            2,
-        )
+        cv2.putText(annotated, f"FPS: {fps:.1f}", (10,25),
+                    cv2.FONT_HERSHEY_SIMPLEX, 0.8, COL_WHITE, 2)
+        cv2.putText(annotated, "S: "+STATES[self.state.value], (120,25),
+                    cv2.FONT_HERSHEY_SIMPLEX, 0.8, COL_WHITE, 2)
 
         self.image_pub.publish(self.bridge.cv2_to_imgmsg(annotated, "rgb8"))
-        publish_detections = list(detections)
-        if tracked_ellipse_detection is not None:
-            publish_detections.insert(0, tracked_ellipse_detection)
-        self.publish_detections(publish_detections)
+        self.publish_detections(detections)
 
     def draw_ellipse(self,img, ellipse, color=(0,255,0), thickness=2):
         if ellipse is None:
@@ -368,6 +452,28 @@ class RFDetrNode(Node):
         output = img.copy()
         cv2.ellipse(output, ellipse, color, thickness)
         return output
+
+    def fallback_ellipse_search(self, frame, predicted_ellipse):
+        if self.prev_ellipse is None:
+            return None
+
+        h, w, _ = frame.shape
+
+        for scale in [1, 2, 3, 4]:
+            k = int(self.mask_kernel_size * scale)
+            mask = np.zeros((h, w), dtype=np.uint8)
+
+            cv2.ellipse(mask, self.prev_ellipse, 255, 2)
+            cv2.ellipse(mask, predicted_ellipse, 255, 2)
+
+            kernel = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (k, k))
+            mask = cv2.dilate(mask, kernel, iterations=1)
+
+            ellipse = self.find_ellipse(mask, frame)
+            if ellipse is not None:
+                return ellipse
+
+        return None
 
     def find_ellipse(self,mask, rgb):
         masked = cv2.bitwise_and(rgb, rgb, mask=mask)
@@ -390,8 +496,19 @@ class RFDetrNode(Node):
                 continue
 
             ellipse = cv2.fitEllipse(c)
+            x,y = ellipse[0]
+            d_prev = 0
+            if self.prev_ellipse is not None:
+                px,py = self.prev_ellipse[0]
+                d_prev = np.sqrt((px-x)**2 + (py-y)**2)
+                _, (pA, pB), pAng = self.prev_ellipse
+                _, (A, B), ang   = ellipse
 
-            if area > best_area:
+                if abs(A - pA) > 0.4*pA: continue
+                if abs(B - pB) > 0.4*pB: continue
+                if abs(ang - pAng) > 30: continue
+
+            if area > best_area and d_prev < 50:
                 best_area = area
                 best_ellipse = ellipse
 
