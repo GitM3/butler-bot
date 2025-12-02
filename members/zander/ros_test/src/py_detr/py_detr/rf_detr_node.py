@@ -11,7 +11,7 @@ import rclpy
 from cv_bridge import CvBridge
 from rclpy.node import Node
 from sensor_msgs.msg import Image
-from std_msgs.msg import Float64MultiArray
+from std_msgs.msg import Float64, Float64MultiArray
 
 COL_WHITE = (255, 255, 255)
 COL_TARGET = (0, 200, 255)
@@ -173,6 +173,8 @@ class RFDetrNode(Node):
         self.find_debug_edges_pub   = self.create_publisher(Image, "/ellipse/find_debug_edges", 1)
         self.find_debug_bdetect_pub = self.create_publisher(Image, "/ellipse/find_debug_bdetect", 1)
         self.find_debug_masked_pub  = self.create_publisher(Image, "/ellipse/find_debug_masked", 1)
+        self.servo_pub = self.create_publisher(Float64, "/set_position", 10)
+        self.yaw_pub = self.create_publisher(Float64, "/set_yaw", 10)
 
         filter_labels = ["cup", "bottle", "wine glass"]
         self.target_labels = [i for i, n in COCO_CLASSES.items() if n in filter_labels]
@@ -199,7 +201,7 @@ class RFDetrNode(Node):
 
         self.model = RFDETR_ONNX(self.model_path)
         self.state = State.DETECT
-        
+        # tracking parameters
         self.prev_t = time.time()
         self.prev_ellipse = None
         self.prev_gray = None
@@ -213,8 +215,21 @@ class RFDetrNode(Node):
         self.ellipse_no = 0
         self.ELLIPSE_YES_THRESH = 3
         self.ELLIPSE_NO_THRESH  = 5
+        # Control parameters
+        self.pitch_min = 0.0
+        self.pitch_max = 90.0
+        self.pitch_angle = 30.0
+        self.pitch_angle_prev = 0.0
+        self.yaw_angle = 0.0
+        self.yaw_angle_prev = 0.0
+        self.image_h = 480
+        self.image_w = 640
+        self.image_cx= self.image_w / 2
+        self.image_cy = self.image_h / 2
+        self.x_max = int(0.25 * self.image_w)
+        self.y_max = int(0.25 * self.image_h)
+
         # Ellipse search tuning
-        self.declare_parameter("ellipse_bottom_ratio", 0.4)
         self.declare_parameter("ellipse_depth_margin", 0.04)
         self.declare_parameter("ellipse_canny_low", 25.0)
         self.declare_parameter("ellipse_canny_high", 100.0)
@@ -225,7 +240,6 @@ class RFDetrNode(Node):
         self.declare_parameter("bag_path", "")
         self.declare_parameter("frame_rate", 20.0)
 
-        self.ellipse_bottom_ratio = float(self.get_parameter("ellipse_bottom_ratio").get_parameter_value().double_value)
         self.ellipse_depth_margin = float(self.get_parameter("ellipse_depth_margin").get_parameter_value().double_value)
         self.ellipse_canny_low = float(self.get_parameter("ellipse_canny_low").get_parameter_value().double_value)
         self.ellipse_canny_high = float(self.get_parameter("ellipse_canny_high").get_parameter_value().double_value)
@@ -325,7 +339,7 @@ class RFDetrNode(Node):
         object_detected_stable = (self.detect_yes >= self.DETECT_YES_THRESH)
         object_lost_stable     = (self.detect_no  >= self.DETECT_NO_THRESH)
 
-        det_bbox = det_center = det_depth = None
+        det_bbox = det_center = det_depth= cx=cy = None
         if target_detection:
             det_center = target_detection["center"]
             det_depth  = target_detection["depth"]
@@ -409,31 +423,51 @@ class RFDetrNode(Node):
         # =====================================================
         elif self.state == State.ELLIPSE_TRACK:
 
-            # If object resurfaces, abandon ellipse tracking
             if object_detected_stable:
                 self.get_logger().info("STATE → DETECT (object back in view)")
                 self.state = State.DETECT
 
-            # Step 1: Try direct ellipse detection
             tracked_ellipse = self.kf_predict()
             if ellipse is None:
                 # Try fallback: grow region around prev + predicted ellipse
                 ellipse = self.fallback_ellipse_search(frame, tracked_ellipse)
 
-            # If ellipse still not found → tracking failed
             if ellipse is None:
                 if ellipse_lost_stable:
                     self.get_logger().info("STATE → DETECT (ellipse lost)")
                     self.state = State.DETECT
             else:
-                # Update and draw
                 self.prev_ellipse = ellipse
                 tracked_ellipse = self.kf_step(ellipse)
                 annotated = self.draw_ellipse(annotated, ellipse, color=(255,0,0))
                 annotated = self.draw_ellipse(annotated, tracked_ellipse, color=(0,0,255))
-
+            cx,cy = tracked_ellipse[0]
             track_dbg = self.draw_ellipse(frame, tracked_ellipse, (0,255,255))
             self.track_debug_pub.publish(self.bridge.cv2_to_imgmsg(track_dbg,"rgb8"))
+
+        # =====================================================
+        # SERVO_CONTROL
+        # =====================================================
+        if cx is not None and cy is not None:
+            y_err = self.image_cy - cy # px
+            x_err = self.image_cx - cx
+            if abs(y_err) > self.y_max:
+                self.pitch_angle += 5 * (y_err)/self.image_h
+                self.pitch_angle = np.clip(self.pitch_angle, self.pitch_min, self.pitch_max)
+            if abs(x_err) > self.x_max:
+                self.yaw_angle += 5 * (x_err)/self.image_w
+
+        if self.pitch_angle != self.pitch_angle_prev:
+            self.pitch_angle_prev = self.pitch_angle
+            msg_out = Float64()
+            msg_out.data = self.pitch_angle
+            self.servo_pub.publish(msg_out)
+
+        if self.yaw_angle != self.yaw_angle_prev:
+            self.yaw_angle_prev = self.yaw_angle
+            msg_out = Float64()
+            msg_out.data = self.yaw_angle
+            self.yaw_pub.publish(msg_out)
 
         now = time.time()
         fps = 1.0/(now - self.prev_t)
@@ -459,13 +493,12 @@ class RFDetrNode(Node):
             return None
 
         h, w, _ = frame.shape
-
         for scale in [1, 2, 3, 4]:
             k = int(self.mask_kernel_size * scale)
             mask = np.zeros((h, w), dtype=np.uint8)
 
-            cv2.ellipse(mask, self.prev_ellipse, 255, 2)
-            cv2.ellipse(mask, predicted_ellipse, 255, 2)
+            mask = cv2.ellipse(mask, self.prev_ellipse, 255, 2)
+            mask = cv2.ellipse(mask, predicted_ellipse, 255, 2)
 
             kernel = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (k, k))
             mask = cv2.dilate(mask, kernel, iterations=1)
@@ -477,18 +510,8 @@ class RFDetrNode(Node):
         return None
 
     def find_ellipse(self, mask, rgb, det_bbox=None):
-        """
-        Finds best ellipse; also publishes debug images so we can diagnose failure.
-        """
-
-        # ------------------------------
-        # 1. Build masked image
-        # ------------------------------
         masked_rgb = cv2.bitwise_and(rgb, rgb, mask=mask)
 
-        # ------------------------------
-        # 2. Canny edges
-        # ------------------------------
         gray = cv2.cvtColor(masked_rgb, cv2.COLOR_BGR2GRAY)
         gray_blur = cv2.GaussianBlur(gray, (5, 5), 0)
         edges = cv2.Canny(gray_blur, self.ellipse_canny_low, self.ellipse_canny_high)
@@ -498,9 +521,6 @@ class RFDetrNode(Node):
         edges_rgb = cv2.cvtColor(edges_masked, cv2.COLOR_GRAY2RGB)
         self.find_debug_edges_pub.publish(self.bridge.cv2_to_imgmsg(edges_rgb, "rgb8"))
 
-        # ------------------------------
-        # 3. Optional bounding-box gate
-        # ------------------------------
         if det_bbox is not None:
             x1, y1, x2, y2 = det_bbox.astype(float)
             w = x2 - x1
@@ -521,19 +541,12 @@ class RFDetrNode(Node):
             # Allow entire area if no detection
             bdetect = np.ones_like(edges_masked, dtype=np.uint8) * 255
 
-        # Publish bounding box gating mask
         bdetect_rgb = cv2.cvtColor(bdetect, cv2.COLOR_GRAY2RGB)
         self.find_debug_bdetect_pub.publish(self.bridge.cv2_to_imgmsg(bdetect_rgb, "rgb8"))
 
-        # ------------------------------
-        # 4. Combine masks for debugging
-        # ------------------------------
         combined_debug = cv2.bitwise_and(edges_rgb, edges_rgb, mask=bdetect)
         self.find_debug_masked_pub.publish(self.bridge.cv2_to_imgmsg(combined_debug, "rgb8"))
 
-        # ------------------------------
-        # 5. Contour detection
-        # ------------------------------
         contours, _ = cv2.findContours(edges_masked, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
 
         best_ellipse = None
@@ -542,7 +555,6 @@ class RFDetrNode(Node):
         dbg = rgb.copy()  # draw contours for debugging
 
         for c in contours:
-            # Draw contour in debug view
             cv2.drawContours(dbg, [c], -1, (0, 0, 255), 1)
 
             if len(c) < 5:
@@ -555,13 +567,11 @@ class RFDetrNode(Node):
             ellipse = cv2.fitEllipse(c)
             (cx, cy), (A, B), ang = ellipse
 
-            # Enforce bounding box gating
             if det_bbox is not None:
                 if not (bx1 <= cx <= bx2 and by1 <= cy <= by2):
                     cv2.circle(dbg, (int(cx), int(cy)), 4, (0, 255, 255), -1)
                     continue
 
-            # Previous ellipse stability check
             if self.prev_ellipse is not None:
                 (px, py), (pA, pB), pAng = self.prev_ellipse
                 d_prev = np.hypot(px - cx, py - cy)
@@ -575,7 +585,6 @@ class RFDetrNode(Node):
                 if abs(ang - pAng) > 30:
                     continue
 
-            # If we reached here → accept candidate
             if area > best_area:
                 best_area = area
                 best_ellipse = ellipse
