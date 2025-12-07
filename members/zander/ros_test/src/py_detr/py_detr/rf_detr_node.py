@@ -15,7 +15,7 @@ from std_msgs.msg import Float64, Float64MultiArray
 
 COL_WHITE = (255, 255, 255)
 COL_TARGET = (0, 200, 255)
-COL_ELLIPSE = (0, 255, 0)
+COL_CONTOUR = (0, 255, 0)
 
 # Check for updates: https://github.com/roboflow/rf-detr/blob/main/rfdetr/util/coco_classes.py
 COCO_CLASSES = {
@@ -26,9 +26,9 @@ COCO_CLASSES = {
 
 class State(Enum):
     DETECT = 0
-    ELLIPSE_SEARCH = 1
-    ELLIPSE_TRACK = 2
-STATES = ["DETECT","E_SEARCH","E_TRACK"]
+    SEARCH = 1
+    TRACK = 2
+STATES = ["DETECT","SEARCH","TRACK"]
 
 def sigmoid(x):
     return 1 / (1 + np.exp(-x))
@@ -168,12 +168,6 @@ class RFDetrNode(Node):
         self.bridge = CvBridge()
         self.image_pub = self.create_publisher(Image, "/camera/annotated", 10)
         self.target_pub = self.create_publisher(Float64MultiArray, "/target/center", 10)
-        self.find_mask_pub = self.create_publisher(Image, "/ellipse/find_mask", 1)
-        self.find_debug_pub   = self.create_publisher(Image, "/ellipse/find_debug", 1)
-        self.find_debug_edges_pub   = self.create_publisher(Image, "/ellipse/find_debug_edges", 1)
-        self.find_debug_bdetect_pub = self.create_publisher(Image, "/ellipse/find_debug_bdetect", 1)
-        self.find_debug_masked_pub  = self.create_publisher(Image, "/ellipse/find_debug_masked", 1)
-        self.track_debug_pub  = self.create_publisher(Image, "/ellipse/track_debug", 1)
         self.servo_pub = self.create_publisher(Float64, "/set_position", 10)
         self.yaw_pub = self.create_publisher(Float64, "/set_yaw", 10)
 
@@ -204,18 +198,15 @@ class RFDetrNode(Node):
         self.state = State.DETECT
         # tracking parameters
         self.prev_t = time.time()
-        self.prev_ellipse = None
-        self.prev_gray = None
-        self.good_detect_kf = 0
-        self.good_ellipse_kf = 0
+        self.prev_contour_center = None
         self.detect_yes = 0
         self.detect_no = 0
         self.DETECT_YES_THRESH = 3   # 3 stable frames = object confirmed
         self.DETECT_NO_THRESH  = 5
-        self.ellipse_yes = 0
-        self.ellipse_no = 0
-        self.ELLIPSE_YES_THRESH = 3
-        self.ELLIPSE_NO_THRESH  = 5
+        self.contour_yes = 0
+        self.contour_no = 0
+        self.CONTOUR_YES_THRESH = 3
+        self.CONTOUR_NO_THRESH  = 5
         # Control parameters
         self.pitch_min = 0.0
         self.pitch_max = 90.0
@@ -230,46 +221,35 @@ class RFDetrNode(Node):
         self.x_max = int(0.5 * self.image_w)
         self.y_max = int(0.5 * self.image_h)
 
-        # Ellipse search tuning
-        self.declare_parameter("ellipse_depth_margin", 0.04)
-        self.declare_parameter("ellipse_canny_low", 25.0)
-        self.declare_parameter("ellipse_canny_high", 75.0)
-        self.declare_parameter("ellipse_min_contour_area", 150.0)
-        self.declare_parameter("ellipse_min_mask_pixels", 80.0)
-        self.declare_parameter("mask_kernel_size", 50)
+        # Depth contour tuning
+        self.declare_parameter("depth_mask_threshold_mm", 1200.0)
+        self.declare_parameter("depth_mask_margin_mm", 20.0)
+        self.declare_parameter("depth_mask_percentile", 2.0)
+        self.declare_parameter("depth_kernel_size", 21)
+        self.declare_parameter("depth_min_contour_area", 500.0)
+        self.declare_parameter("track_window_px", 120.0)
+        self.declare_parameter("search_bbox_margin", 0.1)
         self.declare_parameter("depth_threshold", 600.0)
         self.declare_parameter("bag_path", "")
         self.declare_parameter("frame_rate", 20.0)
 
-        self.ellipse_depth_margin = float(self.get_parameter("ellipse_depth_margin").get_parameter_value().double_value)
-        self.ellipse_canny_low = float(self.get_parameter("ellipse_canny_low").get_parameter_value().double_value)
-        self.ellipse_canny_high = float(self.get_parameter("ellipse_canny_high").get_parameter_value().double_value)
-        self.ellipse_min_contour_area = float(self.get_parameter("ellipse_min_contour_area").get_parameter_value().double_value)
-        self.ellipse_min_mask_pixels = float(self.get_parameter("ellipse_min_mask_pixels").get_parameter_value().double_value)
+        self.depth_mask_threshold = float(self.get_parameter("depth_mask_threshold_mm").get_parameter_value().double_value)
+        self.depth_mask_margin = float(self.get_parameter("depth_mask_margin_mm").get_parameter_value().double_value)
+        self.depth_mask_percentile = float(self.get_parameter("depth_mask_percentile").get_parameter_value().double_value)
+        self.depth_kernel_size = int(self.get_parameter("depth_kernel_size").get_parameter_value().integer_value)
+        if self.depth_kernel_size < 3:
+            self.depth_kernel_size = 3
+        if self.depth_kernel_size % 2 == 0:
+            self.depth_kernel_size += 1
+        self.depth_min_contour_area = float(self.get_parameter("depth_min_contour_area").get_parameter_value().double_value)
+        self.track_window_px = int(self.get_parameter("track_window_px").get_parameter_value().double_value)
+        if self.track_window_px < 20:
+            self.track_window_px = 20
+        self.search_bbox_margin = float(self.get_parameter("search_bbox_margin").get_parameter_value().double_value)
         self.depth_threshold = float(self.get_parameter("depth_threshold").get_parameter_value().double_value)
-        self.mask_kernel_size = int(self.get_parameter("mask_kernel_size").get_parameter_value().integer_value)
         self.bag_path = self.get_parameter("bag_path").get_parameter_value().string_value
         self.frame_rate = float(self.get_parameter("frame_rate").get_parameter_value().double_value)
-        self.target_ellipse_keyframes = 0 # Keyframes of good target ellipse pairs.
         self.timer = self.create_timer(1/self.frame_rate, self.callback)  
-
-        self.kf = cv2.KalmanFilter(5*2,5) # cx,cy,ma,mi,an
-        dt = 1.0/self.frame_rate
-        mat_i  = np.eye(5, dtype=np.float32)
-        mat_dt = mat_i * dt
-
-        A = np.zeros((10, 10), dtype=np.float32)
-        A[0:5, 0:5] = mat_i
-        A[0:5, 5:10] = mat_dt
-        A[5:10, 5:10] = mat_i
-        self.kf.transitionMatrix = A
-
-        H = np.zeros((5,10), dtype=np.float32)
-        H[0:5,0:5] = mat_i
-        self.kf.measurementMatrix = H
-        self.kf.processNoiseCov = np.eye(10, dtype=np.float32) * 1e-2
-        self.kf.measurementNoiseCov = np.eye(5, dtype=np.float32) * 1e-1
-        self.kf.errorCovPost = np.eye(10, dtype=np.float32) * 1
 
         self.pipeline = rs.pipeline()
         self.config = rs.config()
@@ -284,29 +264,127 @@ class RFDetrNode(Node):
         if self.bag_path != "":
             self.device = self.pipeline.get_active_profile().get_device()
             self.device.as_playback().set_real_time(False)
+
+        # RealSense post-processing filters
+        self.spatial_filter = rs.spatial_filter()
+        self.temporal_filter = rs.temporal_filter()
+        self.hole_filling_filter = rs.hole_filling_filter()
+        self.to_disparity = rs.disparity_transform(True)
+        self.from_disparity = rs.disparity_transform(False)
+
+        self.spatial_filter.set_option(rs.option.filter_magnitude, 1)
+        self.spatial_filter.set_option(rs.option.filter_smooth_alpha, 0.5)
+        self.spatial_filter.set_option(rs.option.filter_smooth_delta, 10)
+        self.spatial_filter.set_option(rs.option.holes_fill, 0)
+        self.temporal_filter.set_option(rs.option.filter_smooth_alpha, 0.4)
+        self.temporal_filter.set_option(rs.option.filter_smooth_delta, 20)
+
         self.get_logger().info("✅ BB Detector ready")
 
-    def kf_reset(self):
-        self.kf.errorCovPost = np.eye(10, dtype=np.float32) * 1
+    def post_process_depth_frame(self, depth_frame):
+        frame = depth_frame
+        frame = self.to_disparity.process(frame)
+        frame = self.spatial_filter.process(frame)
+        frame = self.temporal_filter.process(frame)
+        frame = self.from_disparity.process(frame)
+        frame = self.hole_filling_filter.process(frame)
+        return frame
 
-    def kf_predict(self):
-        pred = self.kf.predict()
-        px, py          = float(pred[0]), float(pred[1])
-        p_major         = float(pred[2])
-        p_minor         = float(pred[3])
-        p_angle_deg     = float(pred[4])
+    def build_depth_mask(self, depth_image):
+        if depth_image is None or depth_image.size == 0:
+            return None
 
-        return ((px, py), (p_major, p_minor), p_angle_deg)
-    def kf_step(self,ellipse):
-        tracked_ellipse = self.kf_predict()
-        if ellipse is not None:
-            (cx, cy), (major, minor), angle_deg = ellipse
-            meas = np.array(
-                [[cx], [cy], [major], [minor], [angle_deg]],
-                dtype=np.float32
-            )
-            self.kf.correct(meas)
-        return tracked_ellipse
+        mask = ((depth_image > 0) & (depth_image <= self.depth_mask_threshold)).astype(np.uint8) * 255
+
+        h, w = depth_image.shape
+        roi = depth_image[h // 4 : 3 * h // 4, w // 4 : 3 * w // 4]
+        roi_valid = roi[(roi > 0)]
+        if roi_valid.size == 0:
+            roi_valid = depth_image[depth_image > 0]
+        if roi_valid.size == 0:
+            return mask
+
+        percentile = np.clip(self.depth_mask_percentile, 0.0, 100.0)
+        d_min = float(np.percentile(roi_valid, percentile))
+        d_min = min(d_min, self.depth_mask_threshold)
+
+        margin = max(0.0, self.depth_mask_margin)
+        dynamic_mask = ((depth_image >= d_min) & (depth_image <= d_min + margin)).astype(np.uint8) * 255
+
+        kernel = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (self.depth_kernel_size, self.depth_kernel_size))
+        dynamic_mask = cv2.morphologyEx(dynamic_mask, cv2.MORPH_CLOSE, kernel)
+        mask = cv2.dilate(dynamic_mask, kernel, iterations=1)
+        mask = cv2.morphologyEx(mask, cv2.MORPH_CLOSE, kernel)
+
+        return mask
+
+    def expand_bbox(self, bbox, margin_ratio, image_shape):
+        if bbox is None:
+            return None
+        margin_ratio = max(0.0, margin_ratio)
+        h, w = image_shape
+        if hasattr(bbox, "astype"):
+            x1, y1, x2, y2 = bbox.astype(float)
+        else:
+            x1, y1, x2, y2 = map(float, bbox)
+        width = x2 - x1
+        height = y2 - y1
+        mx = width * margin_ratio
+        my = height * margin_ratio
+        x1 = int(max(0, x1 - mx))
+        y1 = int(max(0, y1 - my))
+        x2 = int(min(w - 1, x2 + mx))
+        y2 = int(min(h - 1, y2 + my))
+        return (x1, y1, x2, y2)
+
+    def bbox_from_center(self, center, half_size, image_shape):
+        if center is None:
+            return None
+        h, w = image_shape
+        cx, cy = center
+        x1 = int(max(0, cx - half_size))
+        y1 = int(max(0, cy - half_size))
+        x2 = int(min(w - 1, cx + half_size))
+        y2 = int(min(h - 1, cy + half_size))
+        if x2 <= x1 or y2 <= y1:
+            return None
+        return (x1, y1, x2, y2)
+
+    def find_depth_contour(self, depth_mask, bbox=None):
+        if depth_mask is None:
+            return None
+
+        search_mask = depth_mask.copy()
+        h, w = search_mask.shape
+
+        if bbox is not None:
+            x1, y1, x2, y2 = bbox
+            x1 = int(np.clip(x1, 0, w - 1))
+            x2 = int(np.clip(x2, 0, w - 1))
+            y1 = int(np.clip(y1, 0, h - 1))
+            y2 = int(np.clip(y2, 0, h - 1))
+            if x2 <= x1 or y2 <= y1:
+                return None
+            gated = np.zeros_like(search_mask)
+            gated[y1:y2, x1:x2] = search_mask[y1:y2, x1:x2]
+            search_mask = gated
+
+        contours, _ = cv2.findContours(search_mask, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
+        if not contours:
+            return None
+
+        contour = max(contours, key=cv2.contourArea)
+        area = cv2.contourArea(contour)
+        if area < self.depth_min_contour_area:
+            return None
+
+        M = cv2.moments(contour)
+        if M["m00"] == 0:
+            return None
+
+        cx = int(M["m10"] / M["m00"])
+        cy = int(M["m01"] / M["m00"])
+        return {"center": (cx, cy), "contour": contour, "mask": search_mask}
 
     def callback(self):
         frames = self.pipeline.wait_for_frames()
@@ -319,10 +397,18 @@ class RFDetrNode(Node):
             self.get_logger().warn("No frames received!")
             return
 
+        depth_frame = self.post_process_depth_frame(depth_frame)
         depth_image = np.asanyarray(depth_frame.get_data())      # uint16 depth in mm
         frame = np.asanyarray(color_frame.get_data())            # RGB aligned to depth
 
         annotated = frame.copy()
+        self.image_h, self.image_w = frame.shape[:2]
+        self.image_cx = self.image_w / 2
+        self.image_cy = self.image_h / 2
+        self.x_max = int(0.5 * self.image_w)
+        self.y_max = int(0.5 * self.image_h)
+
+        depth_mask = self.build_depth_mask(depth_image)
 
         detections, boxes, scores, labels = self.detect_objects(frame, depth_image)
         target_detection = next((d for d in detections if d["class_id"] == self.target_class_id), None)
@@ -339,111 +425,108 @@ class RFDetrNode(Node):
         object_detected_stable = (self.detect_yes >= self.DETECT_YES_THRESH)
         object_lost_stable     = (self.detect_no  >= self.DETECT_NO_THRESH)
 
-        det_bbox = det_center = det_depth= cx=cy = None
+        det_bbox = det_center = det_depth = None
         if target_detection:
             det_center = target_detection["center"]
             det_depth  = target_detection["depth"]
             det_bbox   = target_detection["bbox"]
 
-            cx, cy = det_center
-            cv2.circle(annotated, (int(cx),int(cy)), 4, COL_TARGET, -1)
+            cv2.circle(annotated, (int(det_center[0]), int(det_center[1])), 4, COL_TARGET, -1)
 
         for box in boxes:
             x1,y1,x2,y2 = box.astype(int)
             cv2.rectangle(annotated, (x1,y1), (x2,y2), COL_WHITE, 2)
 
-
-        # Ellipse stuff
-        init_depth_mask = ((depth_image > 0) & (depth_image <= self.depth_threshold)).astype(np.uint8)*255
-        kernel = cv2.getStructuringElement(cv2.MORPH_ELLIPSE,(self.mask_kernel_size,self.mask_kernel_size))
-        expanded_mask = cv2.dilate(init_depth_mask, kernel, iterations=1)
-
-        ellipse = self.find_ellipse(expanded_mask, frame, det_bbox)
-        ellipse_found_raw = ellipse is not None
-
-        # Debounce ellipse
-        if ellipse_found_raw:
-            self.ellipse_yes += 1
-            self.ellipse_no = 0
-        else:
-            self.ellipse_no += 1
-            self.ellipse_yes = 0
-
-        ellipse_found_stable = (self.ellipse_yes >= self.ELLIPSE_YES_THRESH)
-        ellipse_lost_stable  = (self.ellipse_no  >= self.ELLIPSE_NO_THRESH)
-
-
-        # Debug publish find mask + overlay
-        find_mask_rgb = cv2.cvtColor(expanded_mask, cv2.COLOR_GRAY2RGB)
-        if ellipse is not None:
-            cv2.ellipse(find_mask_rgb, ellipse, (0,255,0), 2)
-        self.find_mask_pub.publish(self.bridge.cv2_to_imgmsg(find_mask_rgb, "rgb8"))
-
+        contour_info = None
 
         # STATE: DETECT
         if self.state == State.DETECT:
 
             if object_detected_stable and (det_depth is not None) and det_depth <= self.depth_threshold:
-                self.state = State.ELLIPSE_SEARCH
-                self.get_logger().info("STATE → ELLIPSE_SEARCH")
-                self.kf_reset()
-                self.prev_ellipse = None
-                self.ellipse_yes = self.ellipse_no = 0
+                self.state = State.SEARCH
+                self.get_logger().info("STATE → SEARCH")
+                self.prev_contour_center = None
+                self.contour_yes = self.contour_no = 0
 
-        # STATE: ELLIPSE_SEARCH
-        elif self.state == State.ELLIPSE_SEARCH:
+        # STATE: SEARCH
+        elif self.state == State.SEARCH:
 
-            # Draw current ellipse (not stable yet)
-            if ellipse is not None:
-                annotated = self.draw_ellipse(annotated, ellipse, color=(255,0,0))
+            search_bbox = None
+            if det_bbox is not None and depth_mask is not None:
+                search_bbox = self.expand_bbox(det_bbox, self.search_bbox_margin, depth_mask.shape)
+            contour_info = self.find_depth_contour(depth_mask, search_bbox)
 
-            # Losing object BEFORE ellipse is confirmed → go back
-            if object_lost_stable and not ellipse_found_stable:
-                self.get_logger().info("STATE → DETECT (lost before confirming ellipse)")
+            if contour_info is not None:
+                self.prev_contour_center = contour_info["center"]
+                self.contour_yes += 1
+                self.contour_no = 0
+            else:
+                self.contour_no += 1
+                self.contour_yes = 0
+
+            contour_found_stable = (self.contour_yes >= self.CONTOUR_YES_THRESH)
+
+            # Losing object BEFORE contour is confirmed → go back
+            if object_lost_stable and not contour_found_stable:
+                self.get_logger().info("STATE → DETECT (lost before confirming contour)")
                 self.state = State.DETECT
+                self.prev_contour_center = None
+                self.contour_yes = self.contour_no = 0
 
-            # Ellipse confirmed AND object lost → go to TRACK
-            elif ellipse_found_stable and object_lost_stable:
-                self.prev_ellipse = ellipse
-                self.get_logger().info("STATE → ELLIPSE_TRACK (ellipse confirmed)")
-                self.state = State.ELLIPSE_TRACK
-
-            # If ellipse is found, correct KF for stabilizing angles etc.
-            if ellipse_found_raw:
-                self.prev_ellipse = ellipse
-                tracked_ellipse = self.kf_step(ellipse)
-                annotated = self.draw_ellipse(annotated, tracked_ellipse, color=(0,0,255))
+            # Contour confirmed AND object lost → go to TRACK
+            elif contour_found_stable and object_lost_stable:
+                self.get_logger().info("STATE → TRACK (contour confirmed)")
+                self.state = State.TRACK
+                self.contour_no = 0
 
         # =====================================================
-        # STATE: ELLIPSE_TRACK
+        # STATE: TRACK
         # =====================================================
-        elif self.state == State.ELLIPSE_TRACK:
+        elif self.state == State.TRACK:
 
             if object_detected_stable:
                 self.get_logger().info("STATE → DETECT (object back in view)")
                 self.state = State.DETECT
-
-            tracked_ellipse = self.kf_predict()
-            if ellipse is None:
-                # Try fallback: grow region around prev + predicted ellipse
-                ellipse = self.fallback_ellipse_search(frame, tracked_ellipse)
-
-            if ellipse is None:
-                if ellipse_lost_stable:
-                    self.get_logger().info("STATE → DETECT (ellipse lost)")
-                    self.state = State.DETECT
+                self.prev_contour_center = None
+                self.contour_yes = self.contour_no = 0
             else:
-                self.prev_ellipse = ellipse
-                tracked_ellipse = self.kf_step(ellipse)
-                annotated = self.draw_ellipse(annotated, ellipse, color=(255,0,0))
-                annotated = self.draw_ellipse(annotated, tracked_ellipse, color=(0,0,255))
-            cx,cy = tracked_ellipse[0]
-            track_dbg = self.draw_ellipse(frame, tracked_ellipse, (0,255,255))
-            self.track_debug_pub.publish(self.bridge.cv2_to_imgmsg(track_dbg,"rgb8"))
+                track_bbox = None
+                if det_bbox is not None and depth_mask is not None:
+                    track_bbox = self.expand_bbox(det_bbox, self.search_bbox_margin, depth_mask.shape)
+                elif depth_mask is not None:
+                    track_bbox = self.bbox_from_center(self.prev_contour_center, self.track_window_px, depth_mask.shape)
+                contour_info = self.find_depth_contour(depth_mask, track_bbox)
+
+                if contour_info is not None:
+                    self.prev_contour_center = contour_info["center"]
+                    self.contour_yes += 1
+                    self.contour_no = 0
+                else:
+                    self.contour_no += 1
+                    self.contour_yes = 0
+
+                contour_lost_stable = (self.contour_no >= self.CONTOUR_NO_THRESH)
+                if contour_lost_stable:
+                    self.get_logger().info("STATE → DETECT (contour lost)")
+                    self.state = State.DETECT
+                    self.prev_contour_center = None
+                    self.contour_yes = self.contour_no = 0
 
         # =====================================================
         # SERVO_CONTROL
         # =====================================================
+        target_point = None
+        if contour_info is not None:
+            cv2.drawContours(annotated, [contour_info["contour"]], -1, COL_CONTOUR, 2)
+            target_point = contour_info["center"]
+            cv2.circle(annotated, (int(target_point[0]), int(target_point[1])), 4, COL_CONTOUR, -1)
+        elif det_center is not None:
+            target_point = det_center
+
+        cx = cy = None
+        if target_point is not None:
+            cx, cy = target_point
+
         if cx is not None and cy is not None:
             y_err = self.image_cy - cy # px
             x_err = self.image_cx - cx
@@ -476,123 +559,6 @@ class RFDetrNode(Node):
 
         self.image_pub.publish(self.bridge.cv2_to_imgmsg(annotated, "rgb8"))
         self.publish_detections(detections)
-
-    def draw_ellipse(self,img, ellipse, color=(0,255,0), thickness=2):
-        if ellipse is None:
-            return img
-        output = img.copy()
-        cv2.ellipse(output, ellipse, color, thickness)
-        return output
-
-    def fallback_ellipse_search(self, frame, predicted_ellipse):
-        if self.prev_ellipse is None:
-            return None
-
-        h, w, _ = frame.shape
-        for scale in [1, 2, 3, 4]:
-            k = int(self.mask_kernel_size * scale)
-            mask = np.zeros((h, w), dtype=np.uint8)
-
-            mask = cv2.ellipse(mask, self.prev_ellipse, 255, 2)
-            mask = cv2.ellipse(mask, predicted_ellipse, 255, 2)
-
-            kernel = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (k, k))
-            mask = cv2.dilate(mask, kernel, iterations=1)
-
-            ellipse = self.find_ellipse(mask, frame)
-            if ellipse is not None:
-                return ellipse
-
-        return None
-
-    def find_ellipse(self, mask, rgb, det_bbox=None):
-        masked_rgb = cv2.bitwise_and(rgb, rgb, mask=mask)
-
-        gray = cv2.cvtColor(masked_rgb, cv2.COLOR_BGR2GRAY)
-        gray_blur = cv2.GaussianBlur(gray, (5, 5), 0)
-        edges = cv2.Canny(gray_blur, self.ellipse_canny_low, self.ellipse_canny_high)
-        edges_masked = cv2.bitwise_and(edges, edges, mask=mask)
-
-        # Publish Canny edges debug
-        edges_rgb = cv2.cvtColor(edges_masked, cv2.COLOR_GRAY2RGB)
-        self.find_debug_edges_pub.publish(self.bridge.cv2_to_imgmsg(edges_rgb, "rgb8"))
-
-        if det_bbox is not None:
-            x1, y1, x2, y2 = det_bbox.astype(float)
-            w = x2 - x1
-            h = y2 - y1
-
-            margin_x = 0.10 * w
-            margin_y = 0.10 * h
-
-            bx1 = int(max(0, x1 - margin_x))
-            by1 = int(max(0, y1 - margin_y))
-            bx2 = int(min(rgb.shape[1]-1, x2 + margin_x))
-            by2 = int(min(rgb.shape[0]-1, y2 + margin_y))
-
-            # Create bounding-gate mask
-            bdetect = np.zeros_like(edges_masked, dtype=np.uint8)
-            cv2.rectangle(bdetect, (bx1, by1), (bx2, by2), 255, -1)
-        else:
-            # Allow entire area if no detection
-            bdetect = np.ones_like(edges_masked, dtype=np.uint8) * 255
-
-        bdetect_rgb = cv2.cvtColor(bdetect, cv2.COLOR_GRAY2RGB)
-        self.find_debug_bdetect_pub.publish(self.bridge.cv2_to_imgmsg(bdetect_rgb, "rgb8"))
-
-        combined_debug = cv2.bitwise_and(edges_rgb, edges_rgb, mask=bdetect)
-        self.find_debug_masked_pub.publish(self.bridge.cv2_to_imgmsg(combined_debug, "rgb8"))
-
-        contours, _ = cv2.findContours(edges_masked, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
-
-        best_ellipse = None
-        best_area = 0
-
-        dbg = rgb.copy()  # draw contours for debugging
-
-        for c in contours:
-            cv2.drawContours(dbg, [c], -1, (0, 0, 255), 1)
-
-            if len(c) < 5:
-                continue
-
-            area = cv2.contourArea(c)
-            if area < 200:
-                continue
-
-            ellipse = cv2.fitEllipse(c)
-            (cx, cy), (A, B), ang = ellipse
-
-            if det_bbox is not None:
-                if not (bx1 <= cx <= bx2 and by1 <= cy <= by2):
-                    cv2.circle(dbg, (int(cx), int(cy)), 4, (0, 255, 255), -1)
-                    continue
-
-            # DEBUG: remove
-            self.prev_ellipse = None
-            if self.prev_ellipse is not None:
-                (px, py), (pA, pB), pAng = self.prev_ellipse
-                d_prev = np.hypot(px - cx, py - cy)
-
-                if d_prev > 50:
-                    continue
-                if abs(A - pA) > 0.4 * pA:
-                    continue
-                if abs(B - pB) > 0.4 * pB:
-                    continue
-                if abs(ang - pAng) > 30:
-                    continue
-
-            if area > best_area:
-                best_area = area
-                best_ellipse = ellipse
-                # Draw accepted ellipse in green
-                cv2.ellipse(dbg, ellipse, (0, 255, 0), 2)
-
-        # Publish debugging overlay
-        self.find_debug_pub.publish(self.bridge.cv2_to_imgmsg(dbg, "rgb8"))
-
-        return best_ellipse
 
     def detect_objects(self, frame, depth_array):
         """
