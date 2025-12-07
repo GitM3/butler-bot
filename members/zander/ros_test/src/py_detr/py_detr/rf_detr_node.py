@@ -16,6 +16,7 @@ from std_msgs.msg import Float64, Float64MultiArray
 COL_WHITE = (255, 255, 255)
 COL_TARGET = (0, 200, 255)
 COL_CONTOUR = (0, 255, 0)
+COL_SEARCH = (255, 165, 0)
 
 # Check for updates: https://github.com/roboflow/rf-detr/blob/main/rfdetr/util/coco_classes.py
 COCO_CLASSES = {
@@ -28,7 +29,8 @@ class State(Enum):
     DETECT = 0
     SEARCH = 1
     TRACK = 2
-STATES = ["DETECT","SEARCH","TRACK"]
+    FINISH = 3
+STATES = ["DETECT","SEARCH","TRACK","FINISH"]
 
 def sigmoid(x):
     return 1 / (1 + np.exp(-x))
@@ -170,6 +172,7 @@ class RFDetrNode(Node):
         self.target_pub = self.create_publisher(Float64MultiArray, "/target/center", 10)
         self.servo_pub = self.create_publisher(Float64, "/set_position", 10)
         self.yaw_pub = self.create_publisher(Float64, "/set_yaw", 10)
+        self.state_pub = self.create_publisher(String, "/detector/state", 10)
 
         filter_labels = ["cup", "bottle", "wine glass"]
         self.target_labels = [i for i, n in COCO_CLASSES.items() if n in filter_labels]
@@ -198,6 +201,7 @@ class RFDetrNode(Node):
         self.state = State.DETECT
         # tracking parameters
         self.prev_t = time.time()
+        self.track_stable_start = None
         self.prev_contour_center = None
         self.detect_yes = 0
         self.detect_no = 0
@@ -222,7 +226,7 @@ class RFDetrNode(Node):
         self.y_max = int(0.5 * self.image_h)
 
         # Depth contour tuning
-        self.declare_parameter("depth_mask_threshold_mm", 1200.0)
+        self.declare_parameter("depth_mask_threshold_mm", 700.0)
         self.declare_parameter("depth_mask_margin_mm", 20.0)
         self.declare_parameter("depth_mask_percentile", 2.0)
         self.declare_parameter("depth_kernel_size", 21)
@@ -232,7 +236,9 @@ class RFDetrNode(Node):
         self.declare_parameter("depth_threshold", 600.0)
         self.declare_parameter("bag_path", "")
         self.declare_parameter("frame_rate", 20.0)
+        self.declare_parameter("finish_time", 10.0)
 
+        self.finish_time = float(self.get_parameter("finish_time").get_parameter_value().double_value)
         self.depth_mask_threshold = float(self.get_parameter("depth_mask_threshold_mm").get_parameter_value().double_value)
         self.depth_mask_margin = float(self.get_parameter("depth_mask_margin_mm").get_parameter_value().double_value)
         self.depth_mask_percentile = float(self.get_parameter("depth_mask_percentile").get_parameter_value().double_value)
@@ -290,15 +296,31 @@ class RFDetrNode(Node):
         frame = self.hole_filling_filter.process(frame)
         return frame
 
-    def build_depth_mask(self, depth_image):
+    def build_depth_mask(self, depth_image, roi_bbox=None):
         if depth_image is None or depth_image.size == 0:
             return None
 
         mask = ((depth_image > 0) & (depth_image <= self.depth_mask_threshold)).astype(np.uint8) * 255
 
         h, w = depth_image.shape
-        roi = depth_image[h // 4 : 3 * h // 4, w // 4 : 3 * w // 4]
-        roi_valid = roi[(roi > 0)]
+        roi_valid = None
+        gated_coords = None
+        if roi_bbox is not None:
+            x1, y1, x2, y2 = roi_bbox
+            x1 = int(np.clip(x1, 0, w - 1))
+            x2 = int(np.clip(x2, 0, w - 1))
+            y1 = int(np.clip(y1, 0, h - 1))
+            y2 = int(np.clip(y2, 0, h - 1))
+            if x2 > x1 and y2 > y1:
+                x2_idx = min(x2 + 1, w)
+                y2_idx = min(y2 + 1, h)
+                gated_coords = (x1, y1, x2_idx, y2_idx)
+                roi_region = depth_image[y1:y2_idx, x1:x2_idx]
+                roi_valid = roi_region[roi_region > 0]
+
+        if roi_valid is None or roi_valid.size == 0:
+            roi = depth_image[h // 4 : 3 * h // 4, w // 4 : 3 * w // 4]
+            roi_valid = roi[(roi > 0)]
         if roi_valid.size == 0:
             roi_valid = depth_image[depth_image > 0]
         if roi_valid.size == 0:
@@ -315,6 +337,12 @@ class RFDetrNode(Node):
         dynamic_mask = cv2.morphologyEx(dynamic_mask, cv2.MORPH_CLOSE, kernel)
         mask = cv2.dilate(dynamic_mask, kernel, iterations=1)
         mask = cv2.morphologyEx(mask, cv2.MORPH_CLOSE, kernel)
+
+        if gated_coords is not None:
+            x1, y1, x2_idx, y2_idx = gated_coords
+            roi_mask = np.zeros_like(mask)
+            roi_mask[y1:y2_idx, x1:x2_idx] = mask[y1:y2_idx, x1:x2_idx]
+            mask = roi_mask
 
         return mask
 
@@ -408,8 +436,6 @@ class RFDetrNode(Node):
         self.x_max = int(0.5 * self.image_w)
         self.y_max = int(0.5 * self.image_h)
 
-        depth_mask = self.build_depth_mask(depth_image)
-
         detections, boxes, scores, labels = self.detect_objects(frame, depth_image)
         target_detection = next((d for d in detections if d["class_id"] == self.target_class_id), None)
 
@@ -438,6 +464,8 @@ class RFDetrNode(Node):
             cv2.rectangle(annotated, (x1,y1), (x2,y2), COL_WHITE, 2)
 
         contour_info = None
+        depth_mask = None
+        mask_bbox_draw = None
 
         # STATE: DETECT
         if self.state == State.DETECT:
@@ -447,13 +475,19 @@ class RFDetrNode(Node):
                 self.get_logger().info("STATE → SEARCH")
                 self.prev_contour_center = None
                 self.contour_yes = self.contour_no = 0
+                self.track_stable_start = None
 
         # STATE: SEARCH
         elif self.state == State.SEARCH:
 
             search_bbox = None
-            if det_bbox is not None and depth_mask is not None:
-                search_bbox = self.expand_bbox(det_bbox, self.search_bbox_margin, depth_mask.shape)
+            if det_bbox is not None:
+                search_bbox = self.expand_bbox(det_bbox, self.search_bbox_margin, depth_image.shape)
+            if search_bbox is None:
+                search_bbox = (0, 0, self.image_w - 1, self.image_h - 1)
+
+            depth_mask = self.build_depth_mask(depth_image, search_bbox)
+            mask_bbox_draw = search_bbox
             contour_info = self.find_depth_contour(depth_mask, search_bbox)
 
             if contour_info is not None:
@@ -478,6 +512,7 @@ class RFDetrNode(Node):
                 self.get_logger().info("STATE → TRACK (contour confirmed)")
                 self.state = State.TRACK
                 self.contour_no = 0
+                self.track_stable_start = None
 
         # =====================================================
         # STATE: TRACK
@@ -489,21 +524,30 @@ class RFDetrNode(Node):
                 self.state = State.DETECT
                 self.prev_contour_center = None
                 self.contour_yes = self.contour_no = 0
+                self.track_stable_start = None
             else:
                 track_bbox = None
-                if det_bbox is not None and depth_mask is not None:
-                    track_bbox = self.expand_bbox(det_bbox, self.search_bbox_margin, depth_mask.shape)
-                elif depth_mask is not None:
-                    track_bbox = self.bbox_from_center(self.prev_contour_center, self.track_window_px, depth_mask.shape)
+                if det_bbox is not None:
+                    track_bbox = self.expand_bbox(det_bbox, self.search_bbox_margin, depth_image.shape)
+                elif self.prev_contour_center is not None:
+                    track_bbox = self.bbox_from_center(self.prev_contour_center, self.track_window_px, depth_image.shape)
+                if track_bbox is None:
+                    track_bbox = self.bbox_from_center((self.image_cx, self.image_cy), self.track_window_px, depth_image.shape)
+
+                depth_mask = self.build_depth_mask(depth_image, track_bbox)
+                mask_bbox_draw = track_bbox
                 contour_info = self.find_depth_contour(depth_mask, track_bbox)
 
                 if contour_info is not None:
                     self.prev_contour_center = contour_info["center"]
                     self.contour_yes += 1
                     self.contour_no = 0
+                    if self.track_stable_start is None:
+                        self.track_stable_start = time.time()
                 else:
                     self.contour_no += 1
                     self.contour_yes = 0
+                    self.track_stable_start = None
 
                 contour_lost_stable = (self.contour_no >= self.CONTOUR_NO_THRESH)
                 if contour_lost_stable:
@@ -511,6 +555,26 @@ class RFDetrNode(Node):
                     self.state = State.DETECT
                     self.prev_contour_center = None
                     self.contour_yes = self.contour_no = 0
+                    self.track_stable_start = None
+                elif contour_info is not None and self.track_stable_start is not None:
+                    if (time.time() - self.track_stable_start) >= self.finish_time:
+                        self.get_logger().info(f"STATE → FINISH (contour stable > {self.finish_time})")
+                        self.state = State.FINISH
+                        self.track_stable_start = None
+                        self.contour_yes = self.contour_no = 0
+
+        elif self.state == State.FINISH:
+            if object_detected_stable:
+                self.get_logger().info("STATE → DETECT (object detected during FINISH)")
+                self.state = State.DETECT
+                self.prev_contour_center = None
+                self.contour_yes = self.contour_no = 0
+                self.track_stable_start = None
+
+        # Draw the ROI used for depth mask calculations
+        if mask_bbox_draw is not None:
+            x1, y1, x2, y2 = mask_bbox_draw
+            cv2.rectangle(annotated, (int(x1), int(y1)), (int(x2), int(y2)), COL_SEARCH, 2)
 
         # =====================================================
         # SERVO_CONTROL
@@ -548,6 +612,11 @@ class RFDetrNode(Node):
             msg_out.data = self.yaw_angle
             self.yaw_pub.publish(msg_out)
 
+        if self.state != self.prev_state:
+          msg = String()
+          msg.data = self.state.name
+          self.state_pub.publish(msg)
+          self.prev_state = self.state
         now = time.time()
         fps = 1.0/(now - self.prev_t)
         self.prev_t = now
@@ -558,7 +627,8 @@ class RFDetrNode(Node):
                     cv2.FONT_HERSHEY_SIMPLEX, 0.8, COL_WHITE, 2)
 
         self.image_pub.publish(self.bridge.cv2_to_imgmsg(annotated, "rgb8"))
-        self.publish_detections(detections)
+        self.publish_detections(detections, contour_info, depth_image)
+
 
     def detect_objects(self, frame, depth_array):
         """
@@ -586,10 +656,10 @@ class RFDetrNode(Node):
             )
         return detections, boxes, scores, labels
 
-    def publish_detections(self, detections):
+    def publish_detections(self, detections, contour_info=None, depth_array=None):
         """
-        Publish detections as a flattened Float64 array:
-        [class_id, cx, cy, depth, class_id, ...]
+        Publish detections (and optional contour target) as a flattened Float64 array:
+        [class_id, cx, cy, depth, ...]
         """
         msg = Float64MultiArray()
         payload = []
@@ -600,6 +670,21 @@ class RFDetrNode(Node):
                     float(det["class_id"]),
                     float(det["center"][0]),
                     float(det["center"][1]),
+                    float(depth_val),
+                ]
+            )
+        if contour_info is not None:
+            cx, cy = contour_info["center"]
+            depth_val = None
+            if depth_array is not None:
+                depth_val = self.get_depth_at(depth_array, cx, cy)
+            if depth_val is None:
+                depth_val = math.nan
+            payload.extend(
+                [
+                    float(self.target_class_id),
+                    float(cx),
+                    float(cy),
                     float(depth_val),
                 ]
             )
