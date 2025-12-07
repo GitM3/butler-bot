@@ -113,6 +113,7 @@ in
           tf2-tools # TF debugging tools
           rqt-graph
           rqt-common-plugins # Useful RQT GUI tools
+          rqt-image-view
           rqt-tf-tree # RQT TF visualization
           topic-tools
 

@@ -173,6 +173,7 @@ class RFDetrNode(Node):
         self.find_debug_edges_pub   = self.create_publisher(Image, "/ellipse/find_debug_edges", 1)
         self.find_debug_bdetect_pub = self.create_publisher(Image, "/ellipse/find_debug_bdetect", 1)
         self.find_debug_masked_pub  = self.create_publisher(Image, "/ellipse/find_debug_masked", 1)
+        self.track_debug_pub  = self.create_publisher(Image, "/ellipse/track_debug", 1)
         self.servo_pub = self.create_publisher(Float64, "/set_position", 10)
         self.yaw_pub = self.create_publisher(Float64, "/set_yaw", 10)
 
@@ -226,17 +227,17 @@ class RFDetrNode(Node):
         self.image_w = 640
         self.image_cx= self.image_w / 2
         self.image_cy = self.image_h / 2
-        self.x_max = int(0.25 * self.image_w)
-        self.y_max = int(0.25 * self.image_h)
+        self.x_max = int(0.5 * self.image_w)
+        self.y_max = int(0.5 * self.image_h)
 
         # Ellipse search tuning
         self.declare_parameter("ellipse_depth_margin", 0.04)
         self.declare_parameter("ellipse_canny_low", 25.0)
-        self.declare_parameter("ellipse_canny_high", 100.0)
+        self.declare_parameter("ellipse_canny_high", 75.0)
         self.declare_parameter("ellipse_min_contour_area", 150.0)
         self.declare_parameter("ellipse_min_mask_pixels", 80.0)
         self.declare_parameter("mask_kernel_size", 50)
-        self.declare_parameter("depth_threshold", 1500.0)
+        self.declare_parameter("depth_threshold", 600.0)
         self.declare_parameter("bag_path", "")
         self.declare_parameter("frame_rate", 20.0)
 
@@ -272,7 +273,6 @@ class RFDetrNode(Node):
 
         self.pipeline = rs.pipeline()
         self.config = rs.config()
-
         if self.bag_path != "":
             self.config.enable_device_from_file(self.bag_path)
         else:
@@ -380,9 +380,7 @@ class RFDetrNode(Node):
         self.find_mask_pub.publish(self.bridge.cv2_to_imgmsg(find_mask_rgb, "rgb8"))
 
 
-        # =====================================================
         # STATE: DETECT
-        # =====================================================
         if self.state == State.DETECT:
 
             if object_detected_stable and (det_depth is not None) and det_depth <= self.depth_threshold:
@@ -392,9 +390,7 @@ class RFDetrNode(Node):
                 self.prev_ellipse = None
                 self.ellipse_yes = self.ellipse_no = 0
 
-        # =====================================================
         # STATE: ELLIPSE_SEARCH
-        # =====================================================
         elif self.state == State.ELLIPSE_SEARCH:
 
             # Draw current ellipse (not stable yet)
@@ -572,6 +568,8 @@ class RFDetrNode(Node):
                     cv2.circle(dbg, (int(cx), int(cy)), 4, (0, 255, 255), -1)
                     continue
 
+            # DEBUG: remove
+            self.prev_ellipse = None
             if self.prev_ellipse is not None:
                 (px, py), (pA, pB), pAng = self.prev_ellipse
                 d_prev = np.hypot(px - cx, py - cy)

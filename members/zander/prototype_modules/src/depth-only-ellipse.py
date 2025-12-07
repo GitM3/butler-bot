@@ -5,7 +5,7 @@ import pyrealsense2 as rs
 pipeline = rs.pipeline()
 config = rs.config()
 
-config.enable_device_from_file("/home/zander/Documents/20251202_164616.bag")
+config.enable_device_from_file("/home/zander/Documents/20251202_164751.bag")
 
 align = rs.align(rs.stream.color)
 
