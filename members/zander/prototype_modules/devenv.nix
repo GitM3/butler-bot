@@ -37,6 +37,7 @@ in
         pillow
         idna==3.7
         huggingface_hub
+        pyrealsense2
       '';
     };
     cplusplus.enable = true;
@@ -63,6 +64,8 @@ in
     # ---- multimedia stack (libs) ----
     opencv # provides the native libs OpenCV wants
     ffmpeg
+    libusb1
+    udev
 
     # ---- GUI backends for HighGUI ----
     gtk3
