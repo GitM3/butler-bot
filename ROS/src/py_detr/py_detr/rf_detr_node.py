@@ -222,8 +222,8 @@ class RFDetrNode(Node):
         self.image_w = 640
         self.image_cx= self.image_w / 2
         self.image_cy = self.image_h / 2
-        self.x_max = int(0.5 * self.image_w)
-        self.y_max = int(0.5 * self.image_h)
+        self.x_max = int(0.2 * self.image_w)
+        self.y_max = int(0.2 * self.image_h)
 
         # Depth contour tuning
         self.declare_parameter("depth_mask_threshold_mm", 700.0)
@@ -457,7 +457,6 @@ class RFDetrNode(Node):
             det_center = target_detection["center"]
             det_depth  = target_detection["depth"]
             det_bbox   = target_detection["bbox"]
-            print(f"Target: {target_detection}")
 
             cv2.circle(annotated, (int(det_center[0]), int(det_center[1])), 4, COL_TARGET, -1)
 
@@ -486,7 +485,7 @@ class RFDetrNode(Node):
             if det_bbox is not None:
                 search_bbox = self.expand_bbox(det_bbox, self.search_bbox_margin, depth_image.shape)
             if search_bbox is None:
-                search_bbox = (0, 0, self.image_w - 1, self.image_h - 1)
+                search_bbox = (0, 0, self.image_w * 0.8  , self.image_h - 1)
 
             depth_mask = self.build_depth_mask(depth_image, search_bbox)
             mask_bbox_draw = search_bbox
@@ -596,12 +595,13 @@ class RFDetrNode(Node):
         if cx is not None and cy is not None:
             y_err = self.image_cy - cy # px
             x_err = self.image_cx - cx
-            print(f"Y, Err: {y_err}")
-            if abs(y_err) > self.y_max:
+            if abs(y_err) > 0: # TODO: DEBUG REMOVE self.y_max:
+                print(f"Y, Err: {y_err}")
                 self.pitch_angle += 5 * (y_err)/self.image_h
                 self.pitch_angle = np.clip(self.pitch_angle, self.pitch_min, self.pitch_max)
-            if abs(x_err) > self.x_max:
+            if abs(x_err) > 0: # TODO: DEBUG REMOVE self.x_max:
                 self.yaw_angle += 5 * (x_err)/self.image_w
+                print(f"X, Err: {x_err}")
 
         if self.pitch_angle != self.pitch_angle_prev:
             self.pitch_angle_prev = self.pitch_angle

@@ -79,6 +79,7 @@ in
       gcc
       pkg-config
       onnxruntime
+      librealsense # C++ SDK for Intel RealSense (headers + libs)
 
       # Computer Vision and Media Libraries
       opencv4
@@ -135,7 +136,7 @@ in
     export PYTHONPATH=$PWD/install/py_detr/lib/python3.12/site-packages:$PYTHONPATH
     export PYTHONPATH=$PWD/.devenv/state/venv/lib/python3.12/site-packages:$PYTHONPATH
     export LD_LIBRARY_PATH=${pkgs.libusb1}/lib:${pkgs.librealsense}/lib:${pkgs.systemd}/lib:$LD_LIBRARY_PATH
-
+    export CMAKE_PREFIX_PATH=$NIXPKGS_CMAKE_PREFIX_PATH
 
     if [[ ! $DIRENV_IN_ENVRC ]]; then
         eval "$(${pkgs.python3Packages.argcomplete}/bin/register-python-argcomplete ros2)"
