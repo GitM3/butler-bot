@@ -11,7 +11,7 @@ import rclpy
 from cv_bridge import CvBridge
 from rclpy.node import Node
 from sensor_msgs.msg import Image
-from std_msgs.msg import Float64, Float64MultiArray
+from std_msgs.msg import Float64, Float64MultiArray, String
 
 COL_WHITE = (255, 255, 255)
 COL_TARGET = (0, 200, 255)
@@ -236,7 +236,7 @@ class RFDetrNode(Node):
         self.declare_parameter("depth_threshold", 600.0)
         self.declare_parameter("bag_path", "")
         self.declare_parameter("frame_rate", 20.0)
-        self.declare_parameter("finish_time", 10.0)
+        self.declare_parameter("finish_time", 15.0)
 
         self.finish_time = float(self.get_parameter("finish_time").get_parameter_value().double_value)
         self.depth_mask_threshold = float(self.get_parameter("depth_mask_threshold_mm").get_parameter_value().double_value)
@@ -256,6 +256,7 @@ class RFDetrNode(Node):
         self.bag_path = self.get_parameter("bag_path").get_parameter_value().string_value
         self.frame_rate = float(self.get_parameter("frame_rate").get_parameter_value().double_value)
         self.timer = self.create_timer(1/self.frame_rate, self.callback)  
+        self.prev_state = State.FINISH
 
         self.pipeline = rs.pipeline()
         self.config = rs.config()
