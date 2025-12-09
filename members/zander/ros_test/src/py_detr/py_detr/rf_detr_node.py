@@ -457,6 +457,7 @@ class RFDetrNode(Node):
             det_center = target_detection["center"]
             det_depth  = target_detection["depth"]
             det_bbox   = target_detection["bbox"]
+            print(f"Target: {target_detection}")
 
             cv2.circle(annotated, (int(det_center[0]), int(det_center[1])), 4, COL_TARGET, -1)
 
