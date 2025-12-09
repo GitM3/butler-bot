@@ -595,6 +595,7 @@ class RFDetrNode(Node):
         if cx is not None and cy is not None:
             y_err = self.image_cy - cy # px
             x_err = self.image_cx - cx
+            print(f"Y, Err: {y_err}")
             if abs(y_err) > self.y_max:
                 self.pitch_angle += 5 * (y_err)/self.image_h
                 self.pitch_angle = np.clip(self.pitch_angle, self.pitch_min, self.pitch_max)
