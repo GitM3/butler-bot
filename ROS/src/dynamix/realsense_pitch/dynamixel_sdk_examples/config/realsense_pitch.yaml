@@ -1,0 +1,13 @@
+dynamixel_sdk_examples:
+  realsense_pitch_node:
+    ros__parameters:
+      qos_depth: 5
+      min_goal_position: 205
+      max_goal_position: 545
+      fixed_dxl_id: 5
+      present_angle_publish_hz: 30.0
+      parent_frame: base_link
+      child_frame: camera_pitch
+      frame_offset_x: 0.042
+      frame_offset_y: 0.0
+      frame_offset_z: 0.260

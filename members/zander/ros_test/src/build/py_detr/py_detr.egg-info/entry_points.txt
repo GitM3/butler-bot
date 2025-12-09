@@ -1,5 +1,0 @@
-[console_scripts]
-debug_gui_node = py_detr.debug_gui_node:main
-rfdetr_node = py_detr.rf_detr_node:main
-tracker_node = py_detr.tracker_node:main
-video_node = py_detr.video_node:main
