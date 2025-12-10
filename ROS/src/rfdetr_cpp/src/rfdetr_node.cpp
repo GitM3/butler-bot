@@ -82,9 +82,11 @@ struct Detection {
 
 class RFDETR_ONNX {
 public:
-  RFDETR_ONNX(const std::string &model_path, bool use_cuda)
+  RFDETR_ONNX(const std::string &model_path, bool use_cuda,
+              bool use_softmax = false, bool convert_bgr_to_rgb = false)
       : env_(ORT_LOGGING_LEVEL_WARNING, "rfdetr"), session_options_(),
-        allocator_(), use_cuda_(use_cuda) {
+        allocator_(), use_cuda_(use_cuda), use_softmax_(use_softmax),
+        convert_bgr_to_rgb_(convert_bgr_to_rgb) {
     // Default to CPU EP; optionally append CUDA if available (see below)
     session_options_.SetIntraOpNumThreads(1);
     session_options_.SetInterOpNumThreads(1);
@@ -155,6 +157,11 @@ public:
       cv::cvtColor(img, tmp, cv::COLOR_BGRA2BGR);
       img = tmp;
     }
+    if (convert_bgr_to_rgb_) {
+      cv::Mat tmp;
+      cv::cvtColor(img, tmp, cv::COLOR_BGR2RGB);
+      img = tmp;
+    }
     int h_in = fixed_h_ > 0 ? fixed_h_ : img.rows;
     int w_in = fixed_w_ > 0 ? fixed_w_ : img.cols;
     if (img.rows != h_in || img.cols != w_in)
@@ -191,21 +198,58 @@ public:
         input_shape.data(), input_shape.size());
 
     const char *input_names[] = {input_name_.c_str()};
-    // Output: assume first two are boxes (N,Q,4) and logits (N,Q,C)
-    std::vector<const char *> output_names;
+    // Query output names and request them in a known order: boxes, logits, masks?
     size_t out_count = session_->GetOutputCount();
-    output_names.reserve(out_count);
     std::vector<Ort::AllocatedStringPtr> out_name_holders;
     out_name_holders.reserve(out_count);
+    std::vector<std::string> out_names;
+    out_names.reserve(out_count);
     for (size_t i = 0; i < out_count; ++i) {
-      out_name_holders.emplace_back(
-          session_->GetOutputNameAllocated(i, allocator_));
-      output_names.push_back(out_name_holders.back().get());
+      out_name_holders.emplace_back(session_->GetOutputNameAllocated(i, allocator_));
+      out_names.emplace_back(out_name_holders.back().get());
     }
 
-    auto outputs =
-        session_->Run(Ort::RunOptions{nullptr}, input_names, &input_tensor, 1,
-                      output_names.data(), output_names.size());
+    auto pick_index_by_name = [&](const std::vector<std::string> &names,
+                                  const std::vector<std::string> &keys) -> int {
+      for (size_t i = 0; i < names.size(); ++i) {
+        for (const auto &k : keys) {
+          if (names[i].find(k) != std::string::npos)
+            return (int)i;
+        }
+      }
+      return -1;
+    };
+
+    int idx_boxes = pick_index_by_name(out_names, {"boxes", "pred_boxes"});
+    int idx_logits = pick_index_by_name(out_names, {"logits", "pred_logits"});
+    int idx_masks = pick_index_by_name(out_names, {"masks", "pred_masks"});
+
+    // Fallback: infer by shape if names unhelpful
+    if (idx_boxes < 0 || idx_logits < 0) {
+      // request all outputs and inspect shapes
+      std::vector<const char *> req_names_c;
+      req_names_c.reserve(out_names.size());
+      for (auto &n : out_names) req_names_c.push_back(n.c_str());
+      auto tmp_out = session_->Run(Ort::RunOptions{nullptr}, input_names,
+                                   &input_tensor, 1, req_names_c.data(),
+                                   req_names_c.size());
+      for (size_t i = 0; i < tmp_out.size(); ++i) {
+        auto info = tmp_out[i].GetTensorTypeAndShapeInfo();
+        auto shp = info.GetShape();
+        if (shp.size() == 3 && shp[2] == 4) idx_boxes = (int)i;
+        else if (shp.size() == 3 && shp[2] > 4) idx_logits = (int)i;
+      }
+    }
+
+    // Prepare ordered list
+    std::vector<const char *> req_names;
+    req_names.push_back(out_names[idx_boxes].c_str());
+    req_names.push_back(out_names[idx_logits].c_str());
+    if (idx_masks >= 0) req_names.push_back(out_names[idx_masks].c_str());
+
+    auto outputs = session_->Run(Ort::RunOptions{nullptr}, input_names,
+                                 &input_tensor, 1, req_names.data(),
+                                 req_names.size());
 
     // boxes -> (Q,4) normalized cxcywh
     // logits -> (Q,C)
@@ -229,12 +273,27 @@ public:
     std::memcpy(boxes.data, boxes_ptr, sizeof(float) * Q * 4);
     std::memcpy(logits.data, logits_ptr, sizeof(float) * Q * C);
 
-    // probs = sigmoid(logits)
+    // probs from logits
     cv::Mat probs = logits.clone();
-    for (int i = 0; i < probs.rows; ++i) {
-      for (int j = 0; j < probs.cols; ++j) {
-        probs.at<float>(i, j) = sigmoid(probs.at<float>(i, j));
+    if (use_softmax_) {
+      // Softmax across classes per query; skip last class as background if present
+      for (int i = 0; i < probs.rows; ++i) {
+        float maxv = -std::numeric_limits<float>::infinity();
+        for (int j = 0; j < probs.cols; ++j)
+          maxv = std::max(maxv, probs.at<float>(i, j));
+        float sum = 0.f;
+        for (int j = 0; j < probs.cols; ++j) {
+          float e = std::exp(probs.at<float>(i, j) - maxv);
+          probs.at<float>(i, j) = e;
+          sum += e;
+        }
+        for (int j = 0; j < probs.cols; ++j)
+          probs.at<float>(i, j) /= std::max(sum, 1e-12f);
       }
+    } else {
+      for (int i = 0; i < probs.rows; ++i)
+        for (int j = 0; j < probs.cols; ++j)
+          probs.at<float>(i, j) = sigmoid(probs.at<float>(i, j));
     }
 
     // scores/labels = max over classes
@@ -243,11 +302,26 @@ public:
     scores.reserve(probs.rows);
     labels.reserve(probs.rows);
     for (int i = 0; i < probs.rows; ++i) {
-      double minv, maxv;
-      int minl, maxl;
-      cv::minMaxIdx(probs.row(i), &minv, &maxv, &minl, &maxl);
-      scores.push_back(static_cast<float>(maxv));
-      labels.push_back(maxl);
+      if (use_softmax_ && probs.cols > 1) {
+        // Ignore last class as background
+        int best = 0;
+        float bestv = probs.at<float>(i, 0);
+        for (int j = 1; j < probs.cols - 1; ++j) {
+          float v = probs.at<float>(i, j);
+          if (v > bestv) {
+            bestv = v;
+            best = j;
+          }
+        }
+        scores.push_back(bestv);
+        labels.push_back(best);
+      } else {
+        double minv, maxv;
+        int minl, maxl;
+        cv::minMaxIdx(probs.row(i), &minv, &maxv, &minl, &maxl);
+        scores.push_back(static_cast<float>(maxv));
+        labels.push_back(maxl);
+      }
     }
 
     // top-K by score
@@ -377,7 +451,11 @@ public:
 
     // ONNX model (attempt CUDA if available and permitted)
     use_cuda_param_ = declare_parameter<bool>("use_cuda", true);
-    model_ = std::make_unique<RFDETR_ONNX>(model_path_, use_cuda_param_);
+    use_softmax_param_ = declare_parameter<bool>("use_softmax", false);
+    convert_bgr_to_rgb_param_ = declare_parameter<bool>("convert_bgr_to_rgb", false);
+    model_ = std::make_unique<RFDETR_ONNX>(model_path_, use_cuda_param_,
+                                           use_softmax_param_,
+                                           convert_bgr_to_rgb_param_);
 
     // State
     state_ = State::DETECT;
@@ -931,6 +1009,8 @@ private:
   // Model
   std::unique_ptr<RFDETR_ONNX> model_;
   bool use_cuda_param_ = true;
+  bool use_softmax_param_ = false;
+  bool convert_bgr_to_rgb_param_ = false;
 
   // ROS
   rclcpp::Publisher<sensor_msgs::msg::Image>::SharedPtr image_pub_;

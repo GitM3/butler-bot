@@ -28,16 +28,22 @@ in
         pip
         opencv-python
         trackers
+        supervision==0.27.0rc1
         roboflow==1.2.10
-        rfdetr
+        idna==3.7
+        numpy
+        transformers==4.57.0
+        pyrealsense2
+        timm
+        matplotlib
         onnxruntime>1.17
         onnx==1.19.0
         onnxscript
         onnxsim==0.4.36
-        pillow
-        idna==3.7
-        huggingface_hub
-        pyrealsense2
+        torchvision
+        torch==2.8.0
+        git+https://github.com/roboflow/rf-detr.git
+        lazyros
       '';
     };
     cplusplus.enable = true;
@@ -51,8 +57,6 @@ in
         pillow
         timm
         requests
-        pip
-        virtualenv
         matplotlib
         #torch-bin
         torchvision

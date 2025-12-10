@@ -112,6 +112,7 @@ try:
 
         contours, _ = cv2.findContours(close_mask, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
         debug_color = np.zeros_like(color)
+        cx = cy = None
         if len(contours) > 0:
             c = max(contours, key=cv2.contourArea)
             M = cv2.moments(c)
@@ -120,6 +121,20 @@ try:
                 cy = int(M["m01"]/M["m00"])
                 cv2.putText(color, "X", (cx,cy), cv2.FONT_HERSHEY_SIMPLEX, 0.8, (255,0,0), 2)
                 cv2.drawContours(debug_color, [c], -1, (0, 0, 255), 2)  # red contour
+        if cx is not None and cy is not None:
+            h,w = color.shape[:2]
+            wc,hc = int(w/2), int(h/2)
+            y_err = hc - cy
+            x_err = wc - cx
+            COL = (255,0,0)
+            if np.abs(y_err) > 0.2*h:
+                COL = (0,0,255)
+            if np.abs(x_err) > 0.2*w:
+                COL = (0,0,255)
+
+            cv2.line(color, (wc,cy), (cx,cy), COL, 1)
+            cv2.line(color, (wc,hc), (wc,cy), COL, 1)
+
 
         debug_blend = cv2.addWeighted(color, 1 - alpha2, debug_color, alpha2, 0)
         mask_color = cv2.cvtColor(close_mask, cv2.COLOR_GRAY2BGR)

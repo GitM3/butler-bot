@@ -58,6 +58,7 @@ class RFDETR_ONNX:
             shape = list(input_info.shape)  # [N,C,H,W]
             self.fixed_h = int(shape[2]) if isinstance(shape[2], (int, np.integer)) and shape[2] > 0 else None
             self.fixed_w = int(shape[3]) if isinstance(shape[3], (int, np.integer)) and shape[3] > 0 else None
+            print("Providers:", self.ort_session.get_providers())
             print(f"Model input: NCHW={shape}, fixed_size=({self.fixed_h},{self.fixed_w})")
         except Exception as e:
             raise RuntimeError(
@@ -220,10 +221,10 @@ class RFDetrNode(Node):
         self.yaw_angle_prev = 0.0
         self.image_h = 480
         self.image_w = 640
-        self.image_cx= self.image_w / 2
-        self.image_cy = self.image_h / 2
-        self.x_max = int(0.2 * self.image_w)
-        self.y_max = int(0.2 * self.image_h)
+        self.image_cx= int(self.image_w / 2)
+        self.image_cy = int(self.image_h / 2)
+        self.x_max = int(0.3 * self.image_w)
+        self.y_max = int(0.3 * self.image_h)
 
         # Depth contour tuning
         self.declare_parameter("depth_mask_threshold_mm", 700.0)
@@ -257,6 +258,10 @@ class RFDetrNode(Node):
         self.frame_rate = float(self.get_parameter("frame_rate").get_parameter_value().double_value)
         self.timer = self.create_timer(1/self.frame_rate, self.callback)  
         self.prev_state = State.FINISH
+        self.kernel = cv2.getStructuringElement(
+            cv2.MORPH_ELLIPSE,
+            (self.depth_kernel_size, self.depth_kernel_size)
+        )
 
         self.pipeline = rs.pipeline()
         self.config = rs.config()
@@ -334,10 +339,8 @@ class RFDetrNode(Node):
         margin = max(0.0, self.depth_mask_margin)
         dynamic_mask = ((depth_image >= d_min) & (depth_image <= d_min + margin)).astype(np.uint8) * 255
 
-        kernel = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (self.depth_kernel_size, self.depth_kernel_size))
-        dynamic_mask = cv2.morphologyEx(dynamic_mask, cv2.MORPH_CLOSE, kernel)
-        mask = cv2.dilate(dynamic_mask, kernel, iterations=1)
-        mask = cv2.morphologyEx(mask, cv2.MORPH_CLOSE, kernel)
+        dynamic_mask = cv2.morphologyEx(dynamic_mask, cv2.MORPH_CLOSE, self.kernel)
+        mask = cv2.dilate(dynamic_mask, self.kernel, iterations=1)
 
         if gated_coords is not None:
             x1, y1, x2_idx, y2_idx = gated_coords
@@ -430,14 +433,7 @@ class RFDetrNode(Node):
         depth_image = np.asanyarray(depth_frame.get_data())      # uint16 depth in mm
         frame = np.asanyarray(color_frame.get_data())            # RGB aligned to depth
 
-        annotated = frame.copy()
-        self.image_h, self.image_w = frame.shape[:2]
-        self.image_cx = self.image_w / 2
-        self.image_cy = self.image_h / 2
-        self.x_max = int(0.5 * self.image_w)
-        self.y_max = int(0.5 * self.image_h)
-
-        detections, boxes, scores, labels = self.detect_objects(frame, depth_image)
+        detections, boxes, _, _ = self.detect_objects(frame, depth_image)
         target_detection = next((d for d in detections if d["class_id"] == self.target_class_id), None)
 
         object_detected_raw = target_detection is not None
@@ -458,11 +454,11 @@ class RFDetrNode(Node):
             det_depth  = target_detection["depth"]
             det_bbox   = target_detection["bbox"]
 
-            cv2.circle(annotated, (int(det_center[0]), int(det_center[1])), 4, COL_TARGET, -1)
+            cv2.circle(frame, (int(det_center[0]), int(det_center[1])), 4, COL_TARGET, -1)
 
         for box in boxes:
             x1,y1,x2,y2 = box.astype(int)
-            cv2.rectangle(annotated, (x1,y1), (x2,y2), COL_WHITE, 2)
+            cv2.rectangle(frame, (x1,y1), (x2,y2), COL_WHITE, 2)
 
         contour_info = None
         depth_mask = None
@@ -575,33 +571,36 @@ class RFDetrNode(Node):
         # Draw the ROI used for depth mask calculations
         if mask_bbox_draw is not None:
             x1, y1, x2, y2 = mask_bbox_draw
-            cv2.rectangle(annotated, (int(x1), int(y1)), (int(x2), int(y2)), COL_SEARCH, 2)
+            cv2.rectangle(frame, (int(x1), int(y1)), (int(x2), int(y2)), COL_SEARCH, 2)
 
         # =====================================================
         # SERVO_CONTROL
         # =====================================================
         target_point = None
         if contour_info is not None:
-            cv2.drawContours(annotated, [contour_info["contour"]], -1, COL_CONTOUR, 2)
+            cv2.drawContours(frame, [contour_info["contour"]], -1, COL_CONTOUR, 2)
             target_point = contour_info["center"]
-            cv2.circle(annotated, (int(target_point[0]), int(target_point[1])), 4, COL_CONTOUR, -1)
+            cv2.circle(frame, (int(target_point[0]), int(target_point[1])), 4, COL_CONTOUR, -1)
         elif det_center is not None:
             target_point = det_center
 
-        cx = cy = None
         if target_point is not None:
             cx, cy = target_point
-
-        if cx is not None and cy is not None:
-            y_err = self.image_cy - cy # px
+            cx = int(cx)
+            cy = int(cy)
+            y_err = self.image_cy - cy 
             x_err = self.image_cx - cx
-            if abs(y_err) > 0: # TODO: DEBUG REMOVE self.y_max:
-                print(f"Y, Err: {y_err}")
-                self.pitch_angle += 5 * (y_err)/self.image_h
+            COL = (0,0,255)
+            if abs(y_err) > self.y_max:
+                self.pitch_angle += 2 * (y_err)/self.image_h
                 self.pitch_angle = np.clip(self.pitch_angle, self.pitch_min, self.pitch_max)
-            if abs(x_err) > 0: # TODO: DEBUG REMOVE self.x_max:
-                self.yaw_angle += 5 * (x_err)/self.image_w
-                print(f"X, Err: {x_err}")
+                COL = (255,0,0)
+            if abs(x_err) > self.x_max:
+                self.yaw_angle += 2 * (x_err)/self.image_w
+                COL = (255,0,0)
+
+            cv2.line(frame, (self.image_cx,cy), (cx,cy), COL, 1) # horizontal
+            cv2.line(frame, (self.image_cx,self.image_cy), (self.image_cx,cy), COL, 1)
 
         if self.pitch_angle != self.pitch_angle_prev:
             self.pitch_angle_prev = self.pitch_angle
@@ -624,12 +623,12 @@ class RFDetrNode(Node):
         fps = 1.0/(now - self.prev_t)
         self.prev_t = now
 
-        cv2.putText(annotated, f"FPS: {fps:.1f}", (10,25),
+        cv2.putText(frame, f"FPS: {fps:.1f}", (10,25),
                     cv2.FONT_HERSHEY_SIMPLEX, 0.8, COL_WHITE, 2)
-        cv2.putText(annotated, "S: "+STATES[self.state.value], (120,25),
+        cv2.putText(frame, "S: "+STATES[self.state.value], (120,25),
                     cv2.FONT_HERSHEY_SIMPLEX, 0.8, COL_WHITE, 2)
 
-        self.image_pub.publish(self.bridge.cv2_to_imgmsg(annotated, "rgb8"))
+        self.image_pub.publish(self.bridge.cv2_to_imgmsg(frame, "rgb8"))
         self.publish_detections(detections, contour_info, depth_image)
 
 
