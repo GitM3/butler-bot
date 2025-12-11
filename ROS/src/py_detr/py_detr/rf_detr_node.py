@@ -284,28 +284,28 @@ class RFDetrNode(Node):
             self.device.as_playback().set_real_time(False)
 
         # RealSense post-processing filters
-        self.spatial_filter = rs.spatial_filter()
-        self.temporal_filter = rs.temporal_filter()
-        self.hole_filling_filter = rs.hole_filling_filter()
-        self.to_disparity = rs.disparity_transform(True)
-        self.from_disparity = rs.disparity_transform(False)
+        # self.spatial_filter = rs.spatial_filter()
+        # self.temporal_filter = rs.temporal_filter()
+        # self.hole_filling_filter = rs.hole_filling_filter()
+        # self.to_disparity = rs.disparity_transform(True)
+        # self.from_disparity = rs.disparity_transform(False)
 
-        self.spatial_filter.set_option(rs.option.filter_magnitude, 1)
-        self.spatial_filter.set_option(rs.option.filter_smooth_alpha, 0.5)
-        self.spatial_filter.set_option(rs.option.filter_smooth_delta, 10)
-        self.spatial_filter.set_option(rs.option.holes_fill, 0)
-        self.temporal_filter.set_option(rs.option.filter_smooth_alpha, 0.4)
-        self.temporal_filter.set_option(rs.option.filter_smooth_delta, 20)
+        # self.spatial_filter.set_option(rs.option.filter_magnitude, 1)
+        # self.spatial_filter.set_option(rs.option.filter_smooth_alpha, 0.5)
+        # self.spatial_filter.set_option(rs.option.filter_smooth_delta, 10)
+        # self.spatial_filter.set_option(rs.option.holes_fill, 0)
+        # self.temporal_filter.set_option(rs.option.filter_smooth_alpha, 0.4)
+        # self.temporal_filter.set_option(rs.option.filter_smooth_delta, 20)
 
         self.get_logger().info("✅ BB Detector ready")
 
     def post_process_depth_frame(self, depth_frame):
         frame = depth_frame
-        frame = self.to_disparity.process(frame)
-        frame = self.spatial_filter.process(frame)
-        frame = self.temporal_filter.process(frame)
-        frame = self.from_disparity.process(frame)
-        frame = self.hole_filling_filter.process(frame)
+        # frame = self.to_disparity.process(frame)
+        # frame = self.spatial_filter.process(frame)
+        # frame = self.temporal_filter.process(frame)
+        # frame = self.from_disparity.process(frame)
+        # frame = self.hole_filling_filter.process(frame)
         return frame
 
     def build_depth_mask(self, depth_image, roi_bbox=None):
@@ -496,7 +496,14 @@ class RFDetrNode(Node):
 
         object_detected_stable = (self.detect_yes >= self.DETECT_YES_THRESH)
         object_lost_stable     = (self.detect_no  >= self.DETECT_NO_THRESH)
-
+        # DEBUG: CLASSES
+        for det in detections:
+            self.get_logger().info(
+                f"det: class_id={det['class_id']} "
+                f"name={det['class_name']} "
+                f"score={det['score']:.2f} "
+                f"center={det['center']}"
+            )
         det_bbox = det_center = det_depth = None
         if target_detection:
             det_center = target_detection["center"]
