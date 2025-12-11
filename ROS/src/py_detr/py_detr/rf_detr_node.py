@@ -8,10 +8,14 @@ import numpy as np
 import onnxruntime as ort
 import pyrealsense2 as rs
 import rclpy
+import tf2_geometry_msgs  # noqa: F401
 from cv_bridge import CvBridge
+from geometry_msgs.msg import PointStamped, PoseStamped
+from rclpy.duration import Duration
 from rclpy.node import Node
 from sensor_msgs.msg import Image
 from std_msgs.msg import Float64, Float64MultiArray, String
+from tf2_ros import Buffer, TransformException, TransformListener
 
 COL_WHITE = (255, 255, 255)
 COL_TARGET = (0, 200, 255)
@@ -174,6 +178,10 @@ class RFDetrNode(Node):
         self.servo_pub = self.create_publisher(Float64, "/set_position", 10)
         self.yaw_pub = self.create_publisher(Float64, "/set_yaw", 10)
         self.state_pub = self.create_publisher(String, "/detector/state", 10)
+        self.target_pose_pub = self.create_publisher(PoseStamped, "target/pose",10)
+
+        self.tf_buffer = Buffer()
+        self.tf_listener = TransformListener(self.tf_buffer, self)
 
         filter_labels = ["cup", "bottle", "wine glass"]
         self.target_labels = [i for i, n in COCO_CLASSES.items() if n in filter_labels]
@@ -282,6 +290,10 @@ class RFDetrNode(Node):
         if self.bag_path != "":
             self.device = self.pipeline.get_active_profile().get_device()
             self.device.as_playback().set_real_time(False)
+        profile = self.pipeline.get_active_profile()
+        color_stream = profile.get_stream(rs.stream.color).as_video_stream_profile() 
+        self.color_intrinsics = color_stream.get_intrinsics()
+        self.camera_frame_id = "camera_color_optical_frame"
 
         # RealSense post-processing filters
         # self.spatial_filter = rs.spatial_filter()
@@ -298,6 +310,18 @@ class RFDetrNode(Node):
         # self.temporal_filter.set_option(rs.option.filter_smooth_delta, 20)
 
         self.get_logger().info("✅ BB Detector ready")
+
+    def deproject_pixel_to_3d(self, u, v, depth_m):
+        intr = self.color_intrinsics
+        fx = intr.fx
+        fy = intr.fy
+        cx = intr.ppx
+        cy = intr.ppy
+
+        X = (u - cx) * depth_m / fx
+        Y = (v - cy) * depth_m / fy
+        Z = depth_m
+        return X, Y, Z
 
     def post_process_depth_frame(self, depth_frame):
         frame = depth_frame
@@ -733,39 +757,61 @@ class RFDetrNode(Node):
         return detections, boxes, scores, labels
 
     def publish_detections(self, detections, contour_info=None, depth_array=None):
-        """
-        Publish detections (and optional contour target) as a flattened Float64 array:
-        [class_id, cx, cy, depth, ...]
-        """
-        msg = Float64MultiArray()
-        payload = []
-        for det in detections:
-            depth_val = det["depth"] if det["depth"] is not None else math.nan
-            payload.extend(
-                [
-                    float(det["class_id"]),
-                    float(det["center"][0]),
-                    float(det["center"][1]),
-                    float(depth_val),
-                ]
-            )
-        if contour_info is not None:
+        target_cx = None
+        target_cy = None
+        target_depth = None
+
+        if contour_info is not None and depth_array is not None:
             cx, cy = contour_info["center"]
-            depth_val = None
-            if depth_array is not None:
-                depth_val = self.get_depth_at(depth_array, cx, cy)
-            if depth_val is None:
-                depth_val = math.nan
-            payload.extend(
-                [
-                    float(self.target_class_id),
-                    float(cx),
-                    float(cy),
-                    float(depth_val),
-                ]
+            d = self.get_depth_at(depth_array, cx, cy)
+            if d is not None and not math.isnan(d):
+                target_cx, target_cy, target_depth = cx, cy, d
+
+        # Otherwise fall back to first detection with valid depth
+        if target_cx is None and detections:
+            for det in detections:
+                if det["depth"] is not None and not math.isnan(det["depth"]):
+                    target_cx = det["center"][0]
+                    target_cy = det["center"][1]
+                    target_depth = det["depth"]
+                    break
+
+        if target_cx is None or target_depth is None:
+            return
+
+        X_cam, Y_cam, Z_cam = self.deproject_pixel_to_3d(
+            target_cx,
+            target_cy,
+            target_depth,
+        )
+
+        point_cam = PointStamped()
+        point_cam.header.stamp = self.get_clock().now().to_msg()
+        point_cam.header.frame_id = self.camera_frame_id
+        point_cam.point.x = float(X_cam)
+        point_cam.point.y = float(Y_cam)
+        point_cam.point.z = float(Z_cam)
+
+        try:
+            point_base = self.tf_buffer.transform(
+                point_cam,
+                "base_link",
+                timeout=Duration(seconds=0.1),
             )
-        msg.data = payload
-        self.target_pub.publish(msg)
+        except TransformException as ex:
+            self.get_logger().warn(f"TF transform to base_link failed: {ex}")
+            return
+
+        pose_msg = PoseStamped()
+        pose_msg.header = point_base.header
+        pose_msg.header.frame_id = "base_link"
+        pose_msg.pose.position = point_base.point
+        pose_msg.pose.orientation.x = 0.0
+        pose_msg.pose.orientation.y = 0.0
+        pose_msg.pose.orientation.z = 0.0
+        pose_msg.pose.orientation.w = 1.0
+
+        self.target_pose_pub.publish(pose_msg)
 
     def get_depth_at(self, depth_array, cx, cy):
         """

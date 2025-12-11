@@ -112,11 +112,14 @@ in
           rviz2 # For visualization
           tf2-ros # Transform library
           tf2-tools # TF debugging tools
+          tf2-msgs
+          tf2-geometry-msgs
           rqt-graph
           rqt-common-plugins # Useful RQT GUI tools
           rqt-image-view
           rqt-tf-tree # RQT TF visualization
           topic-tools
+          geometry-msgs
 
           # Camera and image processing
           image-transport
