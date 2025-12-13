@@ -231,6 +231,10 @@ class RFDetrNode(Node):
         self.CONTOUR_YES_THRESH = 3
         self.CONTOUR_NO_THRESH  = 5
         self.frame_counter = 0
+        self.kf = self._create_bbox_kalman_filter()
+        self.kf_initialized = False
+        self.kf_last_time = None
+        self.kf_bbox = None
         # Control parameters
         self.pitch_min = 0.0
         self.pitch_max = 90.0
@@ -257,7 +261,7 @@ class RFDetrNode(Node):
         self.declare_parameter("search_bbox_margin", 0.1)
         self.declare_parameter("depth_threshold", 600.0)
         self.declare_parameter("bag_path", "")
-        self.declare_parameter("frame_rate", 20.0)
+        self.declare_parameter("frame_rate", 10.0)
         self.declare_parameter("finish_time", 15.0)
         self.declare_parameter("annotate", False)
         self.declare_parameter("pitch_step", 5.0 )
@@ -388,6 +392,82 @@ class RFDetrNode(Node):
         Z = depth_m
         return X, Y, Z
 
+    def _create_bbox_kalman_filter(self):
+        kf = cv2.KalmanFilter(8, 4)
+        measurement_matrix = np.zeros((4, 8), dtype=np.float32)
+        measurement_matrix[0, 0] = 1.0
+        measurement_matrix[1, 1] = 1.0
+        measurement_matrix[2, 2] = 1.0
+        measurement_matrix[3, 3] = 1.0
+        kf.measurementMatrix = measurement_matrix
+        kf.processNoiseCov = np.eye(8, dtype=np.float32) * 1e-2
+        kf.measurementNoiseCov = np.eye(4, dtype=np.float32) * 5e-1
+        kf.errorCovPost = np.eye(8, dtype=np.float32)
+        return kf
+
+    def reset_kalman_filter(self, initial_bbox=None):
+        self.kf_initialized = False
+        self.kf_bbox = None
+        if initial_bbox is not None:
+            measurement = np.array(initial_bbox, dtype=np.float32).reshape(4, 1)
+            self.kf.statePost[:4] = measurement
+            self.kf.statePost[4:] = 0.0
+            self.kf.errorCovPost = np.eye(8, dtype=np.float32)
+            self.kf_initialized = True
+            self.kf_bbox = tuple(float(v) for v in np.ravel(measurement))
+
+    def _update_kalman_transition(self, dt):
+        A = np.eye(8, dtype=np.float32)
+        dt = float(max(dt, 1e-3))
+        for i in range(4):
+            A[i, i + 4] = dt
+        self.kf.transitionMatrix = A
+
+    def _clamp_bbox_to_image(self, bbox, image_shape):
+        if bbox is None:
+            return None
+        h, w = image_shape[:2]
+        x1, y1, x2, y2 = bbox
+        x1 = float(np.clip(x1, 0, w - 1))
+        x2 = float(np.clip(x2, 0, w - 1))
+        y1 = float(np.clip(y1, 0, h - 1))
+        y2 = float(np.clip(y2, 0, h - 1))
+        if x2 <= x1 + 1 or y2 <= y1 + 1:
+            return None
+        return (x1, y1, x2, y2)
+
+    def _bbox_from_state(self, state_vec, image_shape):
+        bbox = (
+            float(state_vec[0]),
+            float(state_vec[1]),
+            float(state_vec[2]),
+            float(state_vec[3]),
+        )
+        return self._clamp_bbox_to_image(bbox, image_shape)
+
+    def _predict_kalman_bbox(self, dt, image_shape):
+        if not self.kf_initialized:
+            return None
+        self._update_kalman_transition(dt)
+        state_vec = self.kf.predict()
+        bbox = self._bbox_from_state(state_vec, image_shape)
+        if bbox is not None:
+            self.kf_bbox = bbox
+        return bbox
+
+    def _correct_kalman_filter(self, bbox, image_shape):
+        if bbox is None:
+            return self.kf_bbox
+        measurement = np.array(bbox, dtype=np.float32).reshape(4, 1)
+        if not self.kf_initialized:
+            self.reset_kalman_filter(bbox)
+            return self.kf_bbox
+        self.kf.correct(measurement)
+        bbox = self._bbox_from_state(self.kf.statePost, image_shape)
+        if bbox is not None:
+            self.kf_bbox = bbox
+        return bbox
+
     def post_process_depth_frame(self, depth_frame):
         frame = depth_frame
         # frame = self.to_disparity.process(frame)
@@ -492,6 +572,12 @@ class RFDetrNode(Node):
             return None
         return (x1, y1, x2, y2)
 
+    def full_frame_bbox(self, image_shape):
+        h, w = image_shape[:2]
+        if h <= 0 or w <= 0:
+            return None
+        return (0, 0, w - 1, h - 1)
+
     def find_depth_contour(self, depth_mask, bbox=None):
         if depth_mask is None:
             return None
@@ -550,11 +636,16 @@ class RFDetrNode(Node):
         }
 
     def callback(self):
-        self.draw = True if self.annotate and self.frame_rate % 15 else False
+        self.draw = True if self.annotate and self.frame_counter% 15 else False
         t0 = time.perf_counter()
+        if self.kf_last_time is None:
+            kf_dt = 1.0 / max(self.frame_rate, 1e-3)
+        else:
+            kf_dt = max(1e-3, t0 - self.kf_last_time)
+        self.kf_last_time = t0
         frames = self.pipeline.wait_for_frames()
         aligned = self.align.process(frames)
-        t1 = time.perf_counter()
+        #t1 = time.perf_counter()
 
         depth_frame = aligned.get_depth_frame()
         color_frame = aligned.get_color_frame()
@@ -567,14 +658,14 @@ class RFDetrNode(Node):
         depth_image = np.asanyarray(depth_frame.get_data())      # uint16 depth in mm
         frame = np.asanyarray(color_frame.get_data())            # RGB aligned to depth
 
-        t2 = time.perf_counter()
+        # t2 = time.perf_counter()
 
         detections, boxes, _, _ = self.detect_objects(frame, depth_image)
-        target_detection = next((d for d in detections if d["class_id"] == self.target_class_id), None)
-
+        #target_detection = next((d for d in detections if d["class_id"] == self.target_class_id), None)
+        target_detection = detections[0] if len(detections) > 0 else None
         object_detected_raw = target_detection is not None
 
-        t3 = time.perf_counter()
+        # t3 = time.perf_counter()
 
         if object_detected_raw:
             self.detect_yes += 1
@@ -586,13 +677,13 @@ class RFDetrNode(Node):
         object_detected_stable = (self.detect_yes >= self.DETECT_YES_THRESH)
         object_lost_stable     = (self.detect_no  >= self.DETECT_NO_THRESH)
         # DEBUG: CLASSES
-        for det in detections:
-            self.get_logger().info(
-                f"det: class_id={det['class_id']} "
-                f"name={det['class_name']} "
-                f"score={det['score']:.2f} "
-                f"center={det['center']}"
-            )
+        # for det in detections:
+            # self.get_logger().info(
+            #     f"det: class_id={det['class_id']} "
+            #     f"name={det['class_name']} "
+            #     f"score={det['score']:.2f} "
+            #     f"center={det['center']}"
+            # )
         det_bbox = det_center = det_depth = None
         if target_detection:
             det_center = target_detection["center"]
@@ -624,11 +715,11 @@ class RFDetrNode(Node):
         # STATE: SEARCH
         elif self.state == State.SEARCH:
 
-            search_bbox = None
-            if det_bbox is not None:
+            search_bbox = self._predict_kalman_bbox(kf_dt, depth_image.shape)
+            if search_bbox is None and det_bbox is not None:
                 search_bbox = self.expand_bbox(det_bbox, self.search_bbox_margin, depth_image.shape)
             if search_bbox is None:
-                search_bbox = (0, 0, self.image_w * 0.8  , self.image_h - 1)
+                search_bbox = self.full_frame_bbox(depth_image.shape)
 
             depth_mask = self.build_depth_mask(depth_image, search_bbox)
             mask_bbox_draw = search_bbox
@@ -638,6 +729,12 @@ class RFDetrNode(Node):
                 self.prev_contour_center = contour_info["center"]
                 self.contour_yes += 1
                 self.contour_no = 0
+                measured_bbox = self.bbox_from_center(
+                    contour_info["center"], self.track_window_px, depth_image.shape
+                )
+                filtered_bbox = self._correct_kalman_filter(measured_bbox, depth_image.shape)
+                if filtered_bbox is not None:
+                    mask_bbox_draw = filtered_bbox
             else:
                 self.contour_no += 1
                 self.contour_yes = 0
@@ -648,6 +745,7 @@ class RFDetrNode(Node):
             if object_lost_stable and not contour_found_stable:
                 self.get_logger().info("STATE → DETECT (lost before confirming contour)")
                 self.state = State.DETECT
+                self.reset_kalman_filter()
                 self.prev_contour_center = None
                 self.contour_yes = self.contour_no = 0
 
@@ -666,17 +764,20 @@ class RFDetrNode(Node):
             if object_detected_stable:
                 self.get_logger().info("STATE → DETECT (object back in view)")
                 self.state = State.DETECT
+                self.reset_kalman_filter()
                 self.prev_contour_center = None
                 self.contour_yes = self.contour_no = 0
                 self.track_stable_start = None
             else:
-                track_bbox = None
-                if det_bbox is not None:
-                    track_bbox = self.expand_bbox(det_bbox, self.search_bbox_margin, depth_image.shape)
-                elif self.prev_contour_center is not None:
+                track_bbox = self._predict_kalman_bbox(kf_dt, depth_image.shape)
+                if track_bbox is None and det_bbox is not None:
+                    track_bbox = self.expand_bbox(
+                        det_bbox, self.search_bbox_margin, depth_image.shape
+                    )
+                elif track_bbox is None and self.prev_contour_center is not None:
                     track_bbox = self.bbox_from_center(self.prev_contour_center, self.track_window_px, depth_image.shape)
                 if track_bbox is None:
-                    track_bbox = self.bbox_from_center((self.image_cx, self.image_cy), self.track_window_px, depth_image.shape)
+                    track_bbox = self.full_frame_bbox(depth_image.shape)
 
                 depth_mask = self.build_depth_mask(depth_image, track_bbox)
                 mask_bbox_draw = track_bbox
@@ -688,6 +789,12 @@ class RFDetrNode(Node):
                     self.contour_no = 0
                     if self.track_stable_start is None:
                         self.track_stable_start = time.time()
+                    measured_bbox = self.bbox_from_center(
+                        contour_info["center"], self.track_window_px, depth_image.shape
+                    )
+                    filtered_bbox = self._correct_kalman_filter(measured_bbox, depth_image.shape)
+                    if filtered_bbox is not None:
+                        mask_bbox_draw = filtered_bbox
                 else:
                     self.contour_no += 1
                     self.contour_yes = 0
@@ -697,6 +804,7 @@ class RFDetrNode(Node):
                 if contour_lost_stable:
                     self.get_logger().info("STATE → DETECT (contour lost)")
                     self.state = State.DETECT
+                    self.reset_kalman_filter()
                     self.prev_contour_center = None
                     self.contour_yes = self.contour_no = 0
                     self.track_stable_start = None
@@ -711,11 +819,12 @@ class RFDetrNode(Node):
             if object_detected_stable:
                 self.get_logger().info("STATE → DETECT (object detected during FINISH)")
                 self.state = State.DETECT
+                self.reset_kalman_filter()
                 self.prev_contour_center = None
                 self.contour_yes = self.contour_no = 0
                 self.track_stable_start = None
 
-        t4 = time.perf_counter()
+        # t4 = time.perf_counter()
         # Draw the ROI used for depth mask calculations
         if mask_bbox_draw is not None and self.draw:
             x1, y1, x2, y2 = mask_bbox_draw
@@ -779,21 +888,19 @@ class RFDetrNode(Node):
                         cv2.FONT_HERSHEY_SIMPLEX, 0.8, COL_WHITE, 2)
             cv2.putText(frame, "S: "+STATES[self.state.value], (120,25),
                         cv2.FONT_HERSHEY_SIMPLEX, 0.8, COL_WHITE, 2)
-
-        # TODO: only publish some frames
-        self.image_pub.publish(self.bridge.cv2_to_imgmsg(frame, "rgb8"))
+            self.image_pub.publish(self.bridge.cv2_to_imgmsg(frame, "rgb8"))
         self.publish_detections(detections, contour_info, depth_image)
-        t5 = time.perf_counter()
+        # t5 = time.perf_counter()
         self.frame_counter += 1
-        if self.frame_counter % 30 == 0:
+        if self.frame_counter % 15 == 0:
             self.frame_counter = 0
-            self.get_logger().info(
-                f"timings: capture+align={(t1-t0)*1000:.1f}ms, "
-                f"depth_filter={(t2-t1)*1000:.1f}ms, "
-                f"detect={(t3-t2)*1000:.1f}ms, "
-                f"state_machine={(t4-t3)*1000:.1f}ms"
-                f"rest={(t5-t4)*1000:.1f}ms"
-            )
+        #     self.get_logger().info(
+        #         f"timings: capture+align={(t1-t0)*1000:.1f}ms, "
+        #         f"depth_filter={(t2-t1)*1000:.1f}ms, "
+        #         f"detect={(t3-t2)*1000:.1f}ms, "
+        #         f"state_machine={(t4-t3)*1000:.1f}ms"
+        #         f"rest={(t5-t4)*1000:.1f}ms"
+        #     )
 
 
     def detect_objects(self, frame, depth_array):
