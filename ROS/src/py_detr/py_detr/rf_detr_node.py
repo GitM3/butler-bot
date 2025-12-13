@@ -251,7 +251,7 @@ class RFDetrNode(Node):
         self.declare_parameter("depth_mask_threshold_mm", 700.0)
         self.declare_parameter("depth_mask_margin_mm", 20.0)
         self.declare_parameter("depth_mask_percentile", 2.0)
-        self.declare_parameter("depth_kernel_size", 21)
+        self.declare_parameter("depth_kernel_size", 9)
         self.declare_parameter("depth_min_contour_area", 500.0)
         self.declare_parameter("track_window_px", 120.0)
         self.declare_parameter("search_bbox_margin", 0.1)
@@ -260,6 +260,7 @@ class RFDetrNode(Node):
         self.declare_parameter("frame_rate", 20.0)
         self.declare_parameter("finish_time", 15.0)
         self.declare_parameter("annotate", False)
+        self.declare_parameter("pitch_step", 5.0 )
 
         self.annotate = self.get_parameter("annotate").get_parameter_value().bool_value
         self.draw = self.annotate
@@ -277,6 +278,7 @@ class RFDetrNode(Node):
         if self.track_window_px < 20:
             self.track_window_px = 20
         self.search_bbox_margin = float(self.get_parameter("search_bbox_margin").get_parameter_value().double_value)
+        self.pitch_step = float(self.get_parameter("pitch_step").get_parameter_value().double_value)
         self.depth_threshold = float(self.get_parameter("depth_threshold").get_parameter_value().double_value)
         self.bag_path = self.get_parameter("bag_path").get_parameter_value().string_value
         self.frame_rate = float(self.get_parameter("frame_rate").get_parameter_value().double_value)
@@ -354,11 +356,18 @@ class RFDetrNode(Node):
 
         # Pitch rotation about Y-axis
         pitch_angle_rad = np.pi * (self.pitch_angle /180.0)
-        q = tf_transformations.quaternion_from_euler(
+        q_pitch = tf_transformations.quaternion_from_euler(
             0.0,
             pitch_angle_rad,
             0.0
         )
+        q_mount = tf_transformations.quaternion_from_euler(
+            0.0,
+            -math.pi / 2,
+            0.0
+        )
+        q = tf_transformations.quaternion_multiply(q_mount, q_pitch)
+
 
         t.transform.rotation.x = q[0]
         t.transform.rotation.y = q[1]
@@ -732,7 +741,7 @@ class RFDetrNode(Node):
             x_err = self.image_cx - cx
             COL = (0,0,255)
             if abs(y_err) > self.y_max:
-                self.pitch_angle += 2 * (y_err)/self.image_h
+                self.pitch_angle += self.pitch_step * (y_err)/self.image_h
                 self.pitch_angle = np.clip(self.pitch_angle, self.pitch_min, self.pitch_max)
                 COL = (255,0,0)
             if abs(x_err) > self.x_max:
