@@ -114,6 +114,7 @@ in
           tf2-tools # TF debugging tools
           tf2-msgs
           tf2-geometry-msgs
+          tf-transformations
           rqt-graph
           rqt-common-plugins # Useful RQT GUI tools
           rqt-image-view

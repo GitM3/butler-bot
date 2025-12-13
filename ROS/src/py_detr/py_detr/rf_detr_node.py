@@ -9,13 +9,14 @@ import onnxruntime as ort
 import pyrealsense2 as rs
 import rclpy
 import tf2_geometry_msgs  # noqa: F401
+import tf_transformations
 from cv_bridge import CvBridge
-from geometry_msgs.msg import PointStamped, PoseStamped
-from rclpy.duration import Duration
+from geometry_msgs.msg import PointStamped, TransformStamped
 from rclpy.node import Node
 from sensor_msgs.msg import Image
 from std_msgs.msg import Float64, Float64MultiArray, String
-from tf2_ros import Buffer, TransformException, TransformListener
+from tf2_ros import (Buffer, StaticTransformBroadcaster, TransformBroadcaster,
+                     TransformListener)
 
 COL_WHITE = (255, 255, 255)
 COL_TARGET = (0, 200, 255)
@@ -178,10 +179,19 @@ class RFDetrNode(Node):
         self.servo_pub = self.create_publisher(Float64, "/set_position", 10)
         self.yaw_pub = self.create_publisher(Float64, "/set_yaw", 10)
         self.state_pub = self.create_publisher(String, "/detector/state", 10)
-        self.target_pose_pub = self.create_publisher(PoseStamped, "target/pose",10)
+        # Transforms
+        self.tf_broadcaster = TransformBroadcaster(self)
+        self.static_tf_broadcaster = StaticTransformBroadcaster(self)
 
         self.tf_buffer = Buffer()
         self.tf_listener = TransformListener(self.tf_buffer, self)
+
+        self.camera_frame = "camera_link"
+        self.camera_optical_frame = "camera_optical_frame"
+        self.base_frame = "base_link"
+
+        self.point_cam_pub = self.create_publisher(PointStamped, "target_point_cam", 10)
+        self.point_base_pub = self.create_publisher(PointStamped, "target_point_base", 10)
 
         filter_labels = ["cup", "bottle", "wine glass"]
         self.target_labels = [i for i, n in COCO_CLASSES.items() if n in filter_labels]
@@ -234,6 +244,8 @@ class RFDetrNode(Node):
         self.image_cy = int(self.image_h / 2)
         self.x_max = int(0.3 * self.image_w)
         self.y_max = int(0.3 * self.image_h)
+        self.publish_camera_tf()
+        self.publish_static_camera_optical_tf()
 
         # Depth contour tuning
         self.declare_parameter("depth_mask_threshold_mm", 700.0)
@@ -293,8 +305,6 @@ class RFDetrNode(Node):
         profile = self.pipeline.get_active_profile()
         color_stream = profile.get_stream(rs.stream.color).as_video_stream_profile() 
         self.color_intrinsics = color_stream.get_intrinsics()
-        self.camera_frame_id = "camera_color_optical_frame"
-
         # RealSense post-processing filters
         # self.spatial_filter = rs.spatial_filter()
         # self.temporal_filter = rs.temporal_filter()
@@ -310,6 +320,52 @@ class RFDetrNode(Node):
         # self.temporal_filter.set_option(rs.option.filter_smooth_delta, 20)
 
         self.get_logger().info("✅ BB Detector ready")
+
+    def publish_static_camera_optical_tf(self):
+        t = TransformStamped()
+        t.header.stamp = self.get_clock().now().to_msg()
+        t.header.frame_id = self.camera_frame
+        t.child_frame_id = self.camera_optical_frame
+
+        #  optical frame origin == camera center
+        t.transform.translation.x = 0.0
+        t.transform.translation.y = 0.0
+        t.transform.translation.z = 0.0
+
+        # ROS optical frame convention
+        q = tf_transformations.quaternion_from_euler(-math.pi/2, 0.0, -math.pi/2)
+        t.transform.rotation.x = q[0]
+        t.transform.rotation.y = q[1]
+        t.transform.rotation.z = q[2]
+        t.transform.rotation.w = q[3]
+
+        self.static_tf_broadcaster.sendTransform(t)
+
+    def publish_camera_tf(self):
+        t = TransformStamped()
+        t.header.stamp = self.get_clock().now().to_msg()
+        t.header.frame_id = self.base_frame
+        t.child_frame_id = self.camera_frame
+
+        # Mounting offset
+        t.transform.translation.x = 0.25
+        t.transform.translation.y = 0.0
+        t.transform.translation.z = 0.30
+
+        # Pitch rotation about Y-axis
+        pitch_angle_rad = np.pi * (self.pitch_angle /180.0)
+        q = tf_transformations.quaternion_from_euler(
+            0.0,
+            pitch_angle_rad,
+            0.0
+        )
+
+        t.transform.rotation.x = q[0]
+        t.transform.rotation.y = q[1]
+        t.transform.rotation.z = q[2]
+        t.transform.rotation.w = q[3]
+
+        self.tf_broadcaster.sendTransform(t)
 
     def deproject_pixel_to_3d(self, u, v, depth_m):
         intr = self.color_intrinsics
@@ -692,6 +748,7 @@ class RFDetrNode(Node):
             msg_out = Float64()
             msg_out.data = self.pitch_angle
             self.servo_pub.publish(msg_out)
+            self.publish_camera_tf()
 
         if self.yaw_angle != self.yaw_angle_prev:
             self.yaw_angle_prev = self.yaw_angle
@@ -787,31 +844,13 @@ class RFDetrNode(Node):
 
         point_cam = PointStamped()
         point_cam.header.stamp = self.get_clock().now().to_msg()
-        point_cam.header.frame_id = self.camera_frame_id
-        point_cam.point.x = float(X_cam)
-        point_cam.point.y = float(Y_cam)
-        point_cam.point.z = float(Z_cam)
+        point_cam.header.frame_id = self.camera_optical_frame
+        point_cam.point.x = float(X_cam)/ 1000.0
+        point_cam.point.y = float(Y_cam)/ 1000.0
+        point_cam.point.z = float(Z_cam)/ 1000.0
+        self.point_cam_pub.publish(point_cam)
 
-        try:
-            point_base = self.tf_buffer.transform(
-                point_cam,
-                "base_link",
-                timeout=Duration(seconds=0.1),
-            )
-        except TransformException as ex:
-            self.get_logger().warn(f"TF transform to base_link failed: {ex}")
-            return
 
-        pose_msg = PoseStamped()
-        pose_msg.header = point_base.header
-        pose_msg.header.frame_id = "base_link"
-        pose_msg.pose.position = point_base.point
-        pose_msg.pose.orientation.x = 0.0
-        pose_msg.pose.orientation.y = 0.0
-        pose_msg.pose.orientation.z = 0.0
-        pose_msg.pose.orientation.w = 1.0
-
-        self.target_pose_pub.publish(pose_msg)
 
     def get_depth_at(self, depth_array, cx, cy):
         """
