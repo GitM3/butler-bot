@@ -186,9 +186,8 @@ class RFDetrNode(Node):
         self.tf_buffer = Buffer()
         self.tf_listener = TransformListener(self.tf_buffer, self)
 
-        self.camera_frame = "camera_link"
+        self.base_frame = "camera_pitch"
         self.camera_optical_frame = "camera_optical_frame"
-        self.base_frame = "base_link"
 
         self.point_cam_pub = self.create_publisher(PointStamped, "target_point_cam", 10)
         self.point_base_pub = self.create_publisher(PointStamped, "target_point_base", 10)
@@ -248,7 +247,6 @@ class RFDetrNode(Node):
         self.image_cy = int(self.image_h / 2)
         self.x_max = int(0.3 * self.image_w)
         self.y_max = int(0.3 * self.image_h)
-        self.publish_camera_tf()
         self.publish_static_camera_optical_tf()
 
         # Depth contour tuning
@@ -264,7 +262,7 @@ class RFDetrNode(Node):
         self.declare_parameter("frame_rate", 10.0)
         self.declare_parameter("finish_time", 15.0)
         self.declare_parameter("annotate", False)
-        self.declare_parameter("pitch_step", 5.0 )
+        self.declare_parameter("pitch_step", 8.0 )
 
         self.annotate = self.get_parameter("annotate").get_parameter_value().bool_value
         self.draw = self.annotate
@@ -330,55 +328,23 @@ class RFDetrNode(Node):
     def publish_static_camera_optical_tf(self):
         t = TransformStamped()
         t.header.stamp = self.get_clock().now().to_msg()
-        t.header.frame_id = self.camera_frame
+        t.header.frame_id = self.base_frame
         t.child_frame_id = self.camera_optical_frame
 
         #  optical frame origin == camera center
-        t.transform.translation.x = 0.0
+        t.transform.translation.x = 0.055
         t.transform.translation.y = 0.0
         t.transform.translation.z = 0.0
 
         # ROS optical frame convention
-        q = tf_transformations.quaternion_from_euler(-math.pi/2, 0.0, -math.pi/2)
+        nq = np.radians(-90)
+        q = tf_transformations.quaternion_from_euler(nq, 0.0, nq)
         t.transform.rotation.x = q[0]
         t.transform.rotation.y = q[1]
         t.transform.rotation.z = q[2]
         t.transform.rotation.w = q[3]
 
         self.static_tf_broadcaster.sendTransform(t)
-
-    def publish_camera_tf(self):
-        t = TransformStamped()
-        t.header.stamp = self.get_clock().now().to_msg()
-        t.header.frame_id = self.base_frame
-        t.child_frame_id = self.camera_frame
-
-        # Mounting offset
-        t.transform.translation.x = 0.25
-        t.transform.translation.y = 0.0
-        t.transform.translation.z = 0.30
-
-        # Pitch rotation about Y-axis
-        pitch_angle_rad = np.pi * (self.pitch_angle /180.0)
-        q_pitch = tf_transformations.quaternion_from_euler(
-            0.0,
-            pitch_angle_rad,
-            0.0
-        )
-        q_mount = tf_transformations.quaternion_from_euler(
-            0.0,
-            -math.pi / 2,
-            0.0
-        )
-        q = tf_transformations.quaternion_multiply(q_mount, q_pitch)
-
-
-        t.transform.rotation.x = q[0]
-        t.transform.rotation.y = q[1]
-        t.transform.rotation.z = q[2]
-        t.transform.rotation.w = q[3]
-
-        self.tf_broadcaster.sendTransform(t)
 
     def deproject_pixel_to_3d(self, u, v, depth_m):
         intr = self.color_intrinsics
@@ -866,7 +832,6 @@ class RFDetrNode(Node):
             msg_out = Float64()
             msg_out.data = self.pitch_angle
             self.servo_pub.publish(msg_out)
-            self.publish_camera_tf()
 
         if self.yaw_angle != self.yaw_angle_prev:
             self.yaw_angle_prev = self.yaw_angle
