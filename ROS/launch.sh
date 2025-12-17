@@ -1,8 +1,8 @@
 # IF JETSON:
-ros2 run py_detr rfdetr_node --ros-args -p model_path:=/home/jetson/BUTLER_BOT/members/zander/models/rf-detr-small.onnx
-ros2 launch realsense2_camera rs_launch.py
-ros2 run dynamixel_sdk_examples realsense_pitch --ros-args --params-file /home/jetson/BUTLER_BOT/members/zander/ros_test/src/dynamix/realsense_pitch/dynamixel_sdk_examples/config/realsense_pitch.yaml
+## First run:
+colcon build --symlink-install --packages-select py_detr
+sed -i '1c#!/home/jetson/.pyenv/versions/py310/bin/python' install/py_detr/lib/py_detr/rfdetr_node
 
-# For Testing
-#  ros2 launch realsense2_camera rs_launch.py rosbag_filename:=/home/zander/Development/butler-bot/members/zander/ros_test/test.bag
-#  ros2 run py_detr video_node --ros-args -p bag_path:=/home/zander/Development/butler-bot/members/zander/ros_test/test.bag -p frame_rate:=1.0
+## Launch:
+ros2 run py_detr rfdetr_node --ros-args -p model_path:=/home/jetson/BUTLER_BOT/models/rf-detr-small.onnx
+ros2 run dynamixel_sdk_examples realsense_pitch --ros-args --params-file /home/jetson/BUTLER_BOT/ROS/src/dynamix/realsense_pitch/dynamixel_sdk_examples/config/realsense_pitch.yaml
