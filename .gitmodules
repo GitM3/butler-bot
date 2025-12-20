@@ -4,3 +4,6 @@
 [submodule "ROS/src/dynamix/realsense_pitch"]
 	path = ROS/src/dynamix/realsense_pitch
 	url = https://github.com/shimpeisasaki/realsense_pitch.git
+[submodule "ROS/src/ff_holonomic_target_tracking_nav"]
+	path = ROS/src/ff_holonomic_target_tracking_nav
+	url = https://github.com/nacky823/ff_holonomic_target_tracking_nav.git
