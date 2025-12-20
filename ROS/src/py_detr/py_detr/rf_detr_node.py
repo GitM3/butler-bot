@@ -14,7 +14,7 @@ from cv_bridge import CvBridge
 from geometry_msgs.msg import PointStamped, TransformStamped
 from rclpy.node import Node
 from sensor_msgs.msg import Image
-from std_msgs.msg import Float64, Float64MultiArray, String
+from std_msgs.msg import Float64, String
 from tf2_ros import (Buffer, StaticTransformBroadcaster, TransformBroadcaster,
                      TransformListener)
 
@@ -175,7 +175,6 @@ class RFDetrNode(Node):
 
         self.bridge = CvBridge()
         self.image_pub = self.create_publisher(Image, "/camera/annotated", 10)
-        self.target_pub = self.create_publisher(Float64MultiArray, "/target/center", 10)
         self.servo_pub = self.create_publisher(Float64, "/set_position", 10)
         self.yaw_pub = self.create_publisher(Float64, "/set_yaw", 10)
         self.state_pub = self.create_publisher(String, "/detector/state", 10)
@@ -186,11 +185,12 @@ class RFDetrNode(Node):
         self.tf_buffer = Buffer()
         self.tf_listener = TransformListener(self.tf_buffer, self)
 
+
         self.base_frame = "camera_pitch"
         self.camera_optical_frame = "camera_optical_frame"
+        self.target_frame = "target_frame"
 
         self.point_cam_pub = self.create_publisher(PointStamped, "target_point_cam", 10)
-        self.point_base_pub = self.create_publisher(PointStamped, "target_point_base", 10)
 
         filter_labels = ["cup", "bottle", "wine glass"]
         self.target_labels = [i for i, n in COCO_CLASSES.items() if n in filter_labels]
@@ -923,13 +923,33 @@ class RFDetrNode(Node):
             target_depth,
         )
 
-        point_cam = PointStamped()
-        point_cam.header.stamp = self.get_clock().now().to_msg()
-        point_cam.header.frame_id = self.camera_optical_frame
-        point_cam.point.x = float(X_cam)/ 1000.0
-        point_cam.point.y = float(Y_cam)/ 1000.0
-        point_cam.point.z = float(Z_cam)/ 1000.0
-        self.point_cam_pub.publish(point_cam)
+        x = float(X_cam)/ 1000.0
+        y = float(Y_cam)/ 1000.0
+        z = float(Z_cam)/ 1000.0
+
+        # point_cam = PointStamped()
+        # point_cam.header.stamp = self.get_clock().now().to_msg()
+        # point_cam.header.frame_id = self.camera_optical_frame
+        # point_cam.point.x = x
+        # point_cam.point.y = y 
+        # point_cam.point.z = z
+
+        t = TransformStamped()
+        t.header.stamp = self.get_clock().now().to_msg()
+        t.header.frame_id = self.camera_optical_frame
+        t.child_frame_id = self.target_frame
+        t.transform.translation.x = x
+        t.transform.translation.y = y 
+        t.transform.translation.z = z 
+
+        q = tf_transformations.quaternion_from_euler(0.0, 0.0, 0.0)
+        t.transform.rotation.x = q[0]
+        t.transform.rotation.y = q[1]
+        t.transform.rotation.z = q[2]
+        t.transform.rotation.w = q[3]
+
+        #self.point_cam_pub.publish(point_cam)
+        self.tf_broadcaster.sendTransform(t)
 
 
 
