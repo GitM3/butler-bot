@@ -378,7 +378,7 @@ class RFDetrNode(Node):
                 f"Home point saved in {self.global_frame}: "
                 f"({self.home_pose['x']:.3f}, {self.home_pose['y']:.3f}, {self.home_pose['z']:.3f})"
             )
-            self.home_tf.header.stamp = self.get_clock().now().to_msg()
+            self.home_tf.header.stamp = rclpy.time.Time().to_msg()  
             self.static_tf_broadcaster.sendTransform(self.home_tf)
 
 
