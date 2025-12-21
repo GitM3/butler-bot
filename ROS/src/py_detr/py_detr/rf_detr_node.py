@@ -378,6 +378,8 @@ class RFDetrNode(Node):
                 f"Home point saved in {self.global_frame}: "
                 f"({self.home_pose['x']:.3f}, {self.home_pose['y']:.3f}, {self.home_pose['z']:.3f})"
             )
+            self.home_tf.header.stamp = self.get_clock().now().to_msg()
+            self.tf_broadcaster.sendTransform(self.home_tf)
 
 
         except TransformException as ex:
@@ -960,8 +962,6 @@ class RFDetrNode(Node):
                     f"rest={(t5-t4)*1000:.1f}ms"
                 )
     def publish_homepose(self):
-        self.home_tf.header.stamp = self.get_clock().now().to_msg()
-        self.tf_broadcaster.sendTransform(self.home_tf)
         tf_cam_to_home = self.tf_buffer.lookup_transform(self.camera_optical_frame,
                                                          'home_point',
                                                          rclpy.time.Time())
