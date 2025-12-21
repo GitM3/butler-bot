@@ -379,7 +379,7 @@ class RFDetrNode(Node):
                 f"({self.home_pose['x']:.3f}, {self.home_pose['y']:.3f}, {self.home_pose['z']:.3f})"
             )
             self.home_tf.header.stamp = self.get_clock().now().to_msg()
-            self.tf_broadcaster.sendTransform(self.home_tf)
+            self.static_tf_broadcaster.sendTransform(self.home_tf)
 
 
         except TransformException as ex:
