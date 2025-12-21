@@ -620,7 +620,7 @@ class RFDetrNode(Node):
         self.kf_last_time = t0
         frames = self.pipeline.wait_for_frames()
         aligned = self.align.process(frames)
-        #t1 = time.perf_counter()
+        t1 = time.perf_counter()
 
         depth_frame = aligned.get_depth_frame()
         color_frame = aligned.get_color_frame()
@@ -633,14 +633,14 @@ class RFDetrNode(Node):
         depth_image = np.asanyarray(depth_frame.get_data())      # uint16 depth in mm
         frame = np.asanyarray(color_frame.get_data())            # RGB aligned to depth
 
-        # t2 = time.perf_counter()
+        t2 = time.perf_counter()
 
         detections, boxes, _, _ = self.detect_objects(frame, depth_image)
         #target_detection = next((d for d in detections if d["class_id"] == self.target_class_id), None)
         target_detection = detections[0] if len(detections) > 0 else None
         object_detected_raw = target_detection is not None
 
-        # t3 = time.perf_counter()
+        t3 = time.perf_counter()
 
         if object_detected_raw:
             self.detect_yes += 1
@@ -816,7 +816,7 @@ class RFDetrNode(Node):
             else:
                 self.oscillate_servo()
 
-        # t4 = time.perf_counter()
+        t4 = time.perf_counter()
         # Draw the ROI used for depth mask calculations
         if mask_bbox_draw is not None and self.draw:
             x1, y1, x2, y2 = mask_bbox_draw
@@ -881,17 +881,17 @@ class RFDetrNode(Node):
                         cv2.FONT_HERSHEY_SIMPLEX, 0.8, COL_WHITE, 2)
             self.image_pub.publish(self.bridge.cv2_to_imgmsg(frame, "rgb8"))
         self.publish_detections(detections, contour_info, depth_image)
-        # t5 = time.perf_counter()
+        t5 = time.perf_counter()
         self.frame_counter += 1
         if self.frame_counter % 15 == 0:
             self.frame_counter = 0
-        #     self.get_logger().info(
-        #         f"timings: capture+align={(t1-t0)*1000:.1f}ms, "
-        #         f"depth_filter={(t2-t1)*1000:.1f}ms, "
-        #         f"detect={(t3-t2)*1000:.1f}ms, "
-        #         f"state_machine={(t4-t3)*1000:.1f}ms"
-        #         f"rest={(t5-t4)*1000:.1f}ms"
-        #     )
+            self.get_logger().info(
+                f"timings: capture+align={(t1-t0)*1000:.1f}ms, "
+                f"depth_filter={(t2-t1)*1000:.1f}ms, "
+                f"detect={(t3-t2)*1000:.1f}ms, "
+                f"state_machine={(t4-t3)*1000:.1f}ms"
+                f"rest={(t5-t4)*1000:.1f}ms"
+            )
 
     def oscillate_servo(self):
         # if self.frame_counter % self.pitch_frame_counter != 0:
