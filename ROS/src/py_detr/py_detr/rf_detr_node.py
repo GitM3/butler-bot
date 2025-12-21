@@ -15,9 +15,9 @@ from geometry_msgs.msg import PointStamped, TransformStamped
 from rclpy.node import Node
 from sensor_msgs.msg import Image
 from std_msgs.msg import Bool, Float64, String
-from std_srvs.srv import SetBool
+from std_srvs.srv import SetBool, Trigger
 from tf2_ros import (Buffer, StaticTransformBroadcaster, TransformBroadcaster,
-                     TransformListener)
+                     TransformException, TransformListener)
 
 COL_WHITE = (255, 255, 255)
 COL_TARGET = (0, 200, 255)
@@ -195,6 +195,9 @@ class RFDetrNode(Node):
         self.pause_nav_client = self.create_client(
                     SetBool,
                     '/pause_navigation')
+        self.save_homepoint = self.create_service(Trigger,'save_homepoint',self.save_homepoint_callback)
+        self.home_pose = None
+        self.global_frame = "map"
         self.base_frame = "camera_pitch"
         self.camera_optical_frame = "camera_optical_frame"
         self.target_frame = "target_frame"
@@ -339,6 +342,49 @@ class RFDetrNode(Node):
         # self.temporal_filter.set_option(rs.option.filter_smooth_delta, 20)
 
         self.get_logger().info("✅ BB Detector ready")
+
+    def save_homepoint_callback(self, request, response):
+        response.success = True
+        response.message = 'Home point saved'
+        try:
+            tf = self.tf_buffer.lookup_transform(
+                self.global_frame,
+                self.target_frame,
+                rclpy.time.Time()
+            )
+
+            self.home_pose = {
+                'x': tf.transform.translation.x,
+                'y': tf.transform.translation.y,
+                'z': tf.transform.translation.z,
+                'qx': tf.transform.rotation.x,
+                'qy': tf.transform.rotation.y,
+                'qz': tf.transform.rotation.z,
+                'qw': tf.transform.rotation.w,
+            }
+            self.home_tf = TransformStamped()
+            self.home_tf.header.frame_id = self.global_frame
+            self.home_tf.child_frame_id = 'home_point'
+
+            self.home_tf.transform.translation.x = self.home_pose['x']
+            self.home_tf.transform.translation.y = self.home_pose['y']
+            self.home_tf.transform.translation.z = self.home_pose['z']
+            self.home_tf.transform.rotation.x = self.home_pose['qx']
+            self.home_tf.transform.rotation.y = self.home_pose['qy']
+            self.home_tf.transform.rotation.z = self.home_pose['qz']
+            self.home_tf.transform.rotation.w = self.home_pose['qw']
+
+            self.get_logger().info(
+                f"Home point saved in {self.global_frame}: "
+                f"({self.home_pose['x']:.3f}, {self.home_pose['y']:.3f}, {self.home_pose['z']:.3f})"
+            )
+
+
+        except TransformException as ex:
+            self.get_logger().warn(f"TF lookup failed: {ex}")
+            response.success = False
+            response.message = 'TF lookup failed'
+        return response
 
     def set_navigation_pause(self, pause: bool):
             request = SetBool.Request()
@@ -814,6 +860,7 @@ class RFDetrNode(Node):
                         self.track_stable_start = None
                         self.contour_yes = self.contour_no = 0
         elif self.state == State.FINISH:
+            self.publish_homepose()
             if object_detected_stable:
                 self.set_navigation_pause(False)
                 self.get_logger().info("STATE → DETECT (object detected during FINISH)")
@@ -912,6 +959,23 @@ class RFDetrNode(Node):
                     f"state_machine={(t4-t3)*1000:.1f}ms"
                     f"rest={(t5-t4)*1000:.1f}ms"
                 )
+    def publish_homepose(self):
+        self.home_tf.header.stamp = self.get_clock().now().to_msg()
+        self.tf_broadcaster.sendTransform(self.home_tf)
+        tf_cam_to_home = self.tf_buffer.lookup_transform(self.camera_optical_frame,
+                                                         'home_point',
+                                                         rclpy.time.Time())
+        t = TransformStamped()
+        t.header.stamp = self.get_clock().now().to_msg()
+        t.header.frame_id = self.camera_optical_frame
+        t.child_frame_id = self.target_frame
+
+        t.transform.translation = tf_cam_to_home.transform.translation
+        t.transform.rotation = tf_cam_to_home.transform.rotation
+
+        self.tf_broadcaster.sendTransform(t)
+
+
 
     def oscillate_servo(self):
         # if self.frame_counter % self.pitch_frame_counter != 0:
