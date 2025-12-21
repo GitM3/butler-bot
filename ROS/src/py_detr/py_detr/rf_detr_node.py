@@ -961,10 +961,13 @@ class RFDetrNode(Node):
                     f"state_machine={(t4-t3)*1000:.1f}ms"
                     f"rest={(t5-t4)*1000:.1f}ms"
                 )
+
     def publish_homepose(self):
         tf_cam_to_home = self.tf_buffer.lookup_transform(self.camera_optical_frame,
                                                          'home_point',
                                                          rclpy.time.Time())
+        self.get_logger().info(
+            "Pub home")
         t = TransformStamped()
         t.header.stamp = self.get_clock().now().to_msg()
         t.header.frame_id = self.camera_optical_frame
