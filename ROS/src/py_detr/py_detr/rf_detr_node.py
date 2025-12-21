@@ -15,6 +15,7 @@ from geometry_msgs.msg import PointStamped, TransformStamped
 from rclpy.node import Node
 from sensor_msgs.msg import Image
 from std_msgs.msg import Bool, Float64, String
+from std_srvs.srv import SetBool
 from tf2_ros import (Buffer, StaticTransformBroadcaster, TransformBroadcaster,
                      TransformListener)
 
@@ -191,7 +192,9 @@ class RFDetrNode(Node):
         self.tf_buffer = Buffer()
         self.tf_listener = TransformListener(self.tf_buffer, self)
 
-
+        self.pause_nav_client = self.create_client(
+                    SetBool,
+                    '/pause_navigation')
         self.base_frame = "camera_pitch"
         self.camera_optical_frame = "camera_optical_frame"
         self.target_frame = "target_frame"
@@ -269,11 +272,14 @@ class RFDetrNode(Node):
         self.declare_parameter("depth_threshold", 600.0)
         self.declare_parameter("bag_path", "")
         self.declare_parameter("frame_rate", 10.0)
-        self.declare_parameter("finish_time", 15.0)
+        self.declare_parameter("finish_time", 5.0)
         self.declare_parameter("annotate", False)
+        self.declare_parameter("debug_time", False)
         self.declare_parameter("pitch_step", 15.0 )
 
+
         self.annotate = self.get_parameter("annotate").get_parameter_value().bool_value
+        self.debug_time = self.get_parameter("debug_time").get_parameter_value().bool_value
         self.draw = self.annotate
         self.finish_time = float(self.get_parameter("finish_time").get_parameter_value().double_value)
         self.depth_mask_threshold = float(self.get_parameter("depth_mask_threshold_mm").get_parameter_value().double_value)
@@ -333,6 +339,12 @@ class RFDetrNode(Node):
         # self.temporal_filter.set_option(rs.option.filter_smooth_delta, 20)
 
         self.get_logger().info("✅ BB Detector ready")
+
+    def set_navigation_pause(self, pause: bool):
+            request = SetBool.Request()
+            request.data = pause
+            self.pause_nav_client.call_async(request)
+            return
 
     def publish_static_camera_optical_tf(self):
         t = TransformStamped()
@@ -620,7 +632,8 @@ class RFDetrNode(Node):
         self.kf_last_time = t0
         frames = self.pipeline.wait_for_frames()
         aligned = self.align.process(frames)
-        t1 = time.perf_counter()
+        if self.debug_time:
+            t1 = time.perf_counter()
 
         depth_frame = aligned.get_depth_frame()
         color_frame = aligned.get_color_frame()
@@ -633,14 +646,16 @@ class RFDetrNode(Node):
         depth_image = np.asanyarray(depth_frame.get_data())      # uint16 depth in mm
         frame = np.asanyarray(color_frame.get_data())            # RGB aligned to depth
 
-        t2 = time.perf_counter()
+        if self.debug_time:
+            t2 = time.perf_counter()
 
         detections, boxes, _, _ = self.detect_objects(frame, depth_image)
         #target_detection = next((d for d in detections if d["class_id"] == self.target_class_id), None)
         target_detection = detections[0] if len(detections) > 0 else None
         object_detected_raw = target_detection is not None
 
-        t3 = time.perf_counter()
+        if self.debug_time:
+            t3 = time.perf_counter()
 
         if object_detected_raw:
             self.detect_yes += 1
@@ -795,10 +810,12 @@ class RFDetrNode(Node):
                     if (time.time() - self.track_stable_start) >= self.finish_time:
                         self.get_logger().info(f"STATE → FINISH (contour stable > {self.finish_time})")
                         self.state = State.FINISH
+                        self.set_navigation_pause(True)
                         self.track_stable_start = None
                         self.contour_yes = self.contour_no = 0
         elif self.state == State.FINISH:
             if object_detected_stable:
+                self.set_navigation_pause(False)
                 self.get_logger().info("STATE → DETECT (object detected during FINISH)")
                 self.state = State.DETECT
                 self.reset_kalman_filter()
@@ -816,7 +833,8 @@ class RFDetrNode(Node):
             else:
                 self.oscillate_servo()
 
-        t4 = time.perf_counter()
+        if self.debug_time:
+            t4 = time.perf_counter()
         # Draw the ROI used for depth mask calculations
         if mask_bbox_draw is not None and self.draw:
             x1, y1, x2, y2 = mask_bbox_draw
@@ -881,17 +899,19 @@ class RFDetrNode(Node):
                         cv2.FONT_HERSHEY_SIMPLEX, 0.8, COL_WHITE, 2)
             self.image_pub.publish(self.bridge.cv2_to_imgmsg(frame, "rgb8"))
         self.publish_detections(detections, contour_info, depth_image)
-        t5 = time.perf_counter()
+        if self.debug_time:
+            t5 = time.perf_counter()
         self.frame_counter += 1
         if self.frame_counter % 15 == 0:
             self.frame_counter = 0
-            self.get_logger().info(
-                f"timings: capture+align={(t1-t0)*1000:.1f}ms, "
-                f"depth_filter={(t2-t1)*1000:.1f}ms, "
-                f"detect={(t3-t2)*1000:.1f}ms, "
-                f"state_machine={(t4-t3)*1000:.1f}ms"
-                f"rest={(t5-t4)*1000:.1f}ms"
-            )
+            if self.debug_time:
+                self.get_logger().info(
+                    f"timings: capture+align={(t1-t0)*1000:.1f}ms, "
+                    f"depth_filter={(t2-t1)*1000:.1f}ms, "
+                    f"detect={(t3-t2)*1000:.1f}ms, "
+                    f"state_machine={(t4-t3)*1000:.1f}ms"
+                    f"rest={(t5-t4)*1000:.1f}ms"
+                )
 
     def oscillate_servo(self):
         # if self.frame_counter % self.pitch_frame_counter != 0:
