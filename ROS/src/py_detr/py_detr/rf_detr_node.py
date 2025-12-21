@@ -57,6 +57,9 @@ class RFDETR_ONNX:
         try:
             # Load the ONNX model and initialize the ONNX Runtime session
             self.ort_session = ort.InferenceSession(onnx_model_path,providers=['CUDAExecutionProvider', 'CPUExecutionProvider'])
+            self.fp16 = False
+            if "fp16" in onnx_model_path:
+                self.fp16 = True
 
             # Get input shape
             input_info = self.ort_session.get_inputs()[0]
@@ -91,11 +94,12 @@ class RFDETR_ONNX:
         if frame_rgb.shape[0] != h_in or frame_rgb.shape[1] != w_in:
             frame_rgb = cv2.resize(frame_rgb, (w_in, h_in), interpolation=cv2.INTER_LINEAR)
 
-        x = frame_rgb.astype(np.float32) / 255.0
+        fp_type = np.float16 if self.fp16 else np.float32 
+        x = frame_rgb.astype(fp_type) / 255.0
         x = (x - self.MEANS) / self.STDS     # HWC
         x = np.transpose(x, (2, 0, 1))       # CHW
         x = np.expand_dims(x, 0)             # NCHW
-        return x.astype(np.float32, copy=False)
+        return x.astype(fp_type, copy=False)
 
     def _post_process(
         self,
