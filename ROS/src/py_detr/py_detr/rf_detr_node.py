@@ -241,6 +241,8 @@ class RFDetrNode(Node):
         self.pitch_max = 90.0
         self.pitch_angle = 30.0
         self.pitch_angle_prev = 0.0
+        self.pitch_frame_counter = 1 # frames 
+        self.pitch_dir_up = True
         self.yaw_angle = 0.0
         self.yaw_angle_prev = 0.0
         self.lost_pub_prev = False
@@ -680,17 +682,20 @@ class RFDetrNode(Node):
                 self.contour_yes = self.contour_no = 0
                 self.track_stable_start = None
             if object_lost_stable:
+                self.state = State.SEARCH
+                self.get_logger().info("STATE → SEARCH")
                 self.publish_lost()
             if object_detected_stable:
                 self.publish_found()
 
         # STATE: APPROACH
         elif self.state == State.APPROACH:
-            search_bbox = self._predict_kalman_bbox(kf_dt, depth_image.shape)
-            if search_bbox is None and det_bbox is not None:
-                search_bbox = self.expand_bbox(det_bbox, self.search_bbox_margin, depth_image.shape)
+            search_bbox = det_bbox
             if search_bbox is None:
-                search_bbox = self.full_frame_bbox(depth_image.shape)
+                search_bbox = self._predict_kalman_bbox(kf_dt, depth_image.shape)
+            else:
+                search_bbox = self.expand_bbox(det_bbox, self.search_bbox_margin, depth_image.shape)
+                filtered_bbox = self._correct_kalman_filter(search_bbox, depth_image.shape)
 
             depth_mask = self.build_depth_mask(depth_image, search_bbox)
             mask_bbox_draw = search_bbox
@@ -714,9 +719,9 @@ class RFDetrNode(Node):
 
             # Losing object BEFORE contour is confirmed → go back
             if object_lost_stable and not contour_found_stable:
-                self.get_logger().info("STATE → DETECT (lost before confirming contour)")
                 self.publish_lost()
-                self.state = State.DETECT
+                self.state = State.SEARCH
+                self.get_logger().info("STATE → SEARCH (Lost before stable contour)")
                 self.reset_kalman_filter()
                 self.prev_contour_center = None
                 self.contour_yes = self.contour_no = 0
@@ -774,7 +779,8 @@ class RFDetrNode(Node):
 
                 contour_lost_stable = (self.contour_no >= self.CONTOUR_NO_THRESH)
                 if contour_lost_stable:
-                    self.get_logger().info("STATE → DETECT (contour lost)")
+                    self.state = State.SEARCH
+                    self.get_logger().info("STATE → SEARCH (Lost contour)")
                     self.publish_lost()
                     self.state = State.DETECT
                     self.reset_kalman_filter()
@@ -795,6 +801,16 @@ class RFDetrNode(Node):
                 self.prev_contour_center = None
                 self.contour_yes = self.contour_no = 0
                 self.track_stable_start = None
+        elif self.state == State.SEARCH:
+            if object_detected_stable:
+                self.get_logger().info("STATE → DETECT (object detected during SEARCH)")
+                self.state = State.DETECT
+                self.reset_kalman_filter()
+                self.prev_contour_center = None
+                self.contour_yes = self.contour_no = 0
+                self.track_stable_start = None
+            else:
+                self.oscillate_servo()
 
         # t4 = time.perf_counter()
         # Draw the ROI used for depth mask calculations
@@ -814,7 +830,7 @@ class RFDetrNode(Node):
         elif det_center is not None:
             target_point = det_center
 
-        if target_point is not None:
+        if target_point is not None and self.state != State.SEARCH:
             cx, cy = target_point
             cx = int(cx)
             cy = int(cy)
@@ -872,6 +888,21 @@ class RFDetrNode(Node):
         #         f"state_machine={(t4-t3)*1000:.1f}ms"
         #         f"rest={(t5-t4)*1000:.1f}ms"
         #     )
+
+    def oscillate_servo(self):
+        # if self.frame_counter % self.pitch_frame_counter != 0:
+        #     return
+        if self.pitch_dir_up:
+            if self.pitch_angle <= self.pitch_max:
+                self.pitch_angle += 3
+            else:
+                self.pitch_dir_up = False
+        else:
+            if self.pitch_angle >= self.pitch_min:
+                self.pitch_angle -= 3
+            else:
+                self.pitch_dir_up = True
+
     
     def publish_lost(self):
         msg = Bool()
@@ -913,10 +944,6 @@ class RFDetrNode(Node):
             )
         return detections, boxes, scores, labels
     
-    def oscillate_servo(self):
-        t = self.oscillate_state()
-        angle = abs(math.sin(t))
-
     def publish_detections(self, detections, contour_info=None, depth_array=None):
         target_cx = None
         target_cy = None
