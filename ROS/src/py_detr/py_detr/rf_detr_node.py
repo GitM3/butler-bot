@@ -14,7 +14,7 @@ from cv_bridge import CvBridge
 from geometry_msgs.msg import PointStamped, TransformStamped
 from rclpy.node import Node
 from sensor_msgs.msg import Image
-from std_msgs.msg import Float64, String
+from std_msgs.msg import Bool, Float64, String
 from tf2_ros import (Buffer, StaticTransformBroadcaster, TransformBroadcaster,
                      TransformListener)
 
@@ -32,10 +32,11 @@ COCO_CLASSES = {
 
 class State(Enum):
     DETECT = 0
-    SEARCH = 1
+    APPROACH = 1
     TRACK = 2
     FINISH = 3
-STATES = ["DETECT","SEARCH","TRACK","FINISH"]
+    SEARCH = 4
+STATES = ["DETECT","APPROACH","TRACK","FINISH","SEARCH"]
 
 def sigmoid(x):
     return 1 / (1 + np.exp(-x))
@@ -177,7 +178,8 @@ class RFDetrNode(Node):
         self.image_pub = self.create_publisher(Image, "/camera/annotated", 10)
         self.servo_pub = self.create_publisher(Float64, "/set_position", 10)
         self.yaw_pub = self.create_publisher(Float64, "/set_yaw", 10)
-        self.state_pub = self.create_publisher(String, "/detector/state", 10)
+        self.state_pub = self.create_publisher(String, "/state/detector", 10)
+        self.lost_pub = self.create_publisher(Bool, "/state/lost", 10)
         # Transforms
         self.tf_broadcaster = TransformBroadcaster(self)
         self.static_tf_broadcaster = StaticTransformBroadcaster(self)
@@ -224,7 +226,7 @@ class RFDetrNode(Node):
         self.detect_yes = 0
         self.detect_no = 0
         self.DETECT_YES_THRESH = 3   # 3 stable frames = object confirmed
-        self.DETECT_NO_THRESH  = 5
+        self.DETECT_NO_THRESH  = 10
         self.contour_yes = 0
         self.contour_no = 0
         self.CONTOUR_YES_THRESH = 3
@@ -241,6 +243,7 @@ class RFDetrNode(Node):
         self.pitch_angle_prev = 0.0
         self.yaw_angle = 0.0
         self.yaw_angle_prev = 0.0
+        self.lost_pub_prev = False
         self.image_h = 480
         self.image_w = 640
         self.image_cx= int(self.image_w / 2)
@@ -262,7 +265,7 @@ class RFDetrNode(Node):
         self.declare_parameter("frame_rate", 10.0)
         self.declare_parameter("finish_time", 15.0)
         self.declare_parameter("annotate", False)
-        self.declare_parameter("pitch_step", 8.0 )
+        self.declare_parameter("pitch_step", 15.0 )
 
         self.annotate = self.get_parameter("annotate").get_parameter_value().bool_value
         self.draw = self.annotate
@@ -667,20 +670,22 @@ class RFDetrNode(Node):
         contour_info = None
         depth_mask = None
         mask_bbox_draw = None
-
         # STATE: DETECT
         if self.state == State.DETECT:
-
             if object_detected_stable and (det_depth is not None) and det_depth <= self.depth_threshold:
-                self.state = State.SEARCH
-                self.get_logger().info("STATE → SEARCH")
+                self.publish_found()
+                self.state = State.APPROACH
+                self.get_logger().info("STATE → APPROACH")
                 self.prev_contour_center = None
                 self.contour_yes = self.contour_no = 0
                 self.track_stable_start = None
+            if object_lost_stable:
+                self.publish_lost()
+            if object_detected_stable:
+                self.publish_found()
 
-        # STATE: SEARCH
-        elif self.state == State.SEARCH:
-
+        # STATE: APPROACH
+        elif self.state == State.APPROACH:
             search_bbox = self._predict_kalman_bbox(kf_dt, depth_image.shape)
             if search_bbox is None and det_bbox is not None:
                 search_bbox = self.expand_bbox(det_bbox, self.search_bbox_margin, depth_image.shape)
@@ -710,13 +715,14 @@ class RFDetrNode(Node):
             # Losing object BEFORE contour is confirmed → go back
             if object_lost_stable and not contour_found_stable:
                 self.get_logger().info("STATE → DETECT (lost before confirming contour)")
+                self.publish_lost()
                 self.state = State.DETECT
                 self.reset_kalman_filter()
                 self.prev_contour_center = None
                 self.contour_yes = self.contour_no = 0
 
             # Contour confirmed AND object lost → go to TRACK
-            elif contour_found_stable and object_lost_stable:
+            elif contour_found_stable and object_lost_stable and self.pitch_angle > 60.0 :
                 self.get_logger().info("STATE → TRACK (contour confirmed)")
                 self.state = State.TRACK
                 self.contour_no = 0
@@ -769,6 +775,7 @@ class RFDetrNode(Node):
                 contour_lost_stable = (self.contour_no >= self.CONTOUR_NO_THRESH)
                 if contour_lost_stable:
                     self.get_logger().info("STATE → DETECT (contour lost)")
+                    self.publish_lost()
                     self.state = State.DETECT
                     self.reset_kalman_filter()
                     self.prev_contour_center = None
@@ -780,7 +787,6 @@ class RFDetrNode(Node):
                         self.state = State.FINISH
                         self.track_stable_start = None
                         self.contour_yes = self.contour_no = 0
-
         elif self.state == State.FINISH:
             if object_detected_stable:
                 self.get_logger().info("STATE → DETECT (object detected during FINISH)")
@@ -866,7 +872,20 @@ class RFDetrNode(Node):
         #         f"state_machine={(t4-t3)*1000:.1f}ms"
         #         f"rest={(t5-t4)*1000:.1f}ms"
         #     )
+    
+    def publish_lost(self):
+        msg = Bool()
+        msg.data = True
+        if not self.lost_pub_prev:
+            self.lost_pub.publish(msg)
+            self.lost_pub_prev = True
 
+    def publish_found(self):
+        msg = Bool()
+        msg.data = False
+        if self.lost_pub_prev:
+            self.lost_pub.publish(msg)
+            self.lost_pub_prev = False
 
     def detect_objects(self, frame, depth_array):
         """
@@ -893,6 +912,10 @@ class RFDetrNode(Node):
                 }
             )
         return detections, boxes, scores, labels
+    
+    def oscillate_servo(self):
+        t = self.oscillate_state()
+        angle = abs(math.sin(t))
 
     def publish_detections(self, detections, contour_info=None, depth_array=None):
         target_cx = None
