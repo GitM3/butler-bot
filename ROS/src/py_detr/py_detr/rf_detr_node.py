@@ -349,7 +349,7 @@ class RFDetrNode(Node):
         try:
             tf = self.tf_buffer.lookup_transform(
                 self.global_frame,
-                self.target_frame,
+                self.camera_optical_frame,
                 rclpy.time.Time()
             )
 
