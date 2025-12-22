@@ -62,10 +62,8 @@ class RFDETR_ONNX:
             so.enable_mem_pattern = True
             so.enable_cpu_mem_arena = True
 
-# Prefer sequential unless you know CPU is the bottleneck
-            so.execution_mode = ort.ExecutionMode.ORT_SEQUENTIAL
+            so.execution_mode = ort.ExecutionMode.ORT_PARALLEL
 
-# Start conservative on Jetson:
             so.intra_op_num_threads = 1
             so.inter_op_num_threads = 1
             self.ort_session = ort.InferenceSession(onnx_model_path,providers=['CUDAExecutionProvider', 'CPUExecutionProvider'],sess_options=so)
@@ -286,7 +284,7 @@ class RFDetrNode(Node):
         self.declare_parameter("depth_threshold", 600.0)
         self.declare_parameter("bag_path", "")
         self.declare_parameter("frame_rate", 10.0)
-        self.declare_parameter("finish_time", 5.0)
+        self.declare_parameter("finish_time", 2.0)
         self.declare_parameter("annotate", False)
         self.declare_parameter("debug_time", False)
         self.declare_parameter("pitch_step", 15.0 )
