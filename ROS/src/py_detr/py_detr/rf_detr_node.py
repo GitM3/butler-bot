@@ -57,7 +57,18 @@ class RFDETR_ONNX:
     def __init__(self, onnx_model_path):
         try:
             # Load the ONNX model and initialize the ONNX Runtime session
-            self.ort_session = ort.InferenceSession(onnx_model_path,providers=['CUDAExecutionProvider', 'CPUExecutionProvider'])
+            so = ort.SessionOptions()
+            so.graph_optimization_level = ort.GraphOptimizationLevel.ORT_ENABLE_ALL
+            so.enable_mem_pattern = True
+            so.enable_cpu_mem_arena = True
+
+# Prefer sequential unless you know CPU is the bottleneck
+            so.execution_mode = ort.ExecutionMode.ORT_SEQUENTIAL
+
+# Start conservative on Jetson:
+            so.intra_op_num_threads = 1
+            so.inter_op_num_threads = 1
+            self.ort_session = ort.InferenceSession(onnx_model_path,providers=['CUDAExecutionProvider', 'CPUExecutionProvider'],sess_options=so)
             self.fp16 = False
             if "fp16" in onnx_model_path:
                 self.fp16 = True
