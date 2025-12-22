@@ -1008,15 +1008,16 @@ class RFDetrNode(Node):
         msg = Bool()
         msg.data = True
         if not self.lost_pub_prev:
-            self.lost_pub.publish(msg)
             self.lost_pub_prev = True
+        self.lost_pub.publish(msg)
 
     def publish_found(self):
         msg = Bool()
         msg.data = False
         if self.lost_pub_prev:
-            self.lost_pub.publish(msg)
+            # self.lost_pub.publish(msg)
             self.lost_pub_prev = False
+        self.lost_pub.publish(msg)
 
     def detect_objects(self, frame, depth_array):
         """
