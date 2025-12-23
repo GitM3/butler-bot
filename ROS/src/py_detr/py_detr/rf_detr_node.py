@@ -1014,8 +1014,8 @@ class RFDetrNode(Node):
 
 
     def oscillate_servo(self):
-        # if self.frame_counter % self.pitch_frame_counter != 0:
-        #     return
+        if self.frame_counter % 2 != 0:
+             return
         if self.pitch_dir_up:
             if self.pitch_angle <= self.pitch_max:
                 self.pitch_angle += 2
