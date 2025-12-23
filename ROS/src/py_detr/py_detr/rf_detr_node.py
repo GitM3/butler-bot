@@ -350,7 +350,7 @@ class RFDetrNode(Node):
         # self.temporal_filter.set_option(rs.option.filter_smooth_alpha, 0.4)
         # self.temporal_filter.set_option(rs.option.filter_smooth_delta, 20)
         try:
-            self.save_homepoint()
+            self.save_homepoint_sub()
             self.get_logger().info(
                 f"Home point saved in {self.global_frame}: "
                 f"({self.home_pose['x']:.3f}, {self.home_pose['y']:.3f}, {self.home_pose['z']:.3f})"
@@ -363,7 +363,7 @@ class RFDetrNode(Node):
         response.success = True
         response.message = 'Home point saved'
         try:
-            self.save_homepoint()
+            self.save_homepoint_sub()
             self.get_logger().info(
                 f"Home point saved in {self.global_frame}: "
                 f"({self.home_pose['x']:.3f}, {self.home_pose['y']:.3f}, {self.home_pose['z']:.3f})"
@@ -374,7 +374,7 @@ class RFDetrNode(Node):
             response.message = 'TF lookup failed'
         return response
 
-    def save_homepoint(self):
+    def save_homepoint_sub(self):
         tf = self.tf_buffer.lookup_transform(
             self.global_frame,
             self.camera_optical_frame,
