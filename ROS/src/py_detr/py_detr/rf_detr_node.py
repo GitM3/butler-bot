@@ -807,19 +807,23 @@ class RFDetrNode(Node):
                 self.state = State.TRACK
                 self.contour_no = 0
                 self.track_stable_start = None
+            elif contour_found_stable and object_detected_stable:
+                self.finish_quick(det_depth)
 
         # =====================================================
         # STATE: TRACK
         # =====================================================
         elif self.state == State.TRACK:
 
-            if object_detected_stable and self.pitch_angle < 65:
-                self.get_logger().info("STATE → DETECT (object back in view)")
-                self.state = State.DETECT
-                self.reset_kalman_filter()
-                self.prev_contour_center = None
-                self.contour_yes = self.contour_no = 0
-                self.track_stable_start = None
+            if object_detected_stable 
+                if self.pitch_angle < 65:
+                    self.get_logger().info("STATE → DETECT (object back in view)")
+                    self.state = State.DETECT
+                    self.reset_kalman_filter()
+                    self.prev_contour_center = None
+                    self.contour_yes = self.contour_no = 0
+                    self.track_stable_start = None
+                self.finish_quick(det_depth)
             else:
                 track_bbox = self._predict_kalman_bbox(kf_dt, depth_image.shape)
                 if track_bbox is None and det_bbox is not None:
@@ -986,6 +990,12 @@ class RFDetrNode(Node):
 
         self.tf_broadcaster.sendTransform(t)
 
+    def finish_quick(self,depth):
+        if self.pitch_angle > 80 and (depth is not None) and depth <= 0.3:
+            self.get_logger().info("STATE → FINISH (assume arrived)")
+            self.state = State.FINISH
+            return True
+        return False
 
 
     def oscillate_servo(self):
