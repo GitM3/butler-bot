@@ -287,10 +287,12 @@ class RFDetrNode(Node):
         self.declare_parameter("finish_time", 2.0)
         self.declare_parameter("annotate", False)
         self.declare_parameter("debug_time", False)
+        self.declare_parameter("pub_return", False)
         self.declare_parameter("pitch_step", 15.0 )
 
 
         self.annotate = self.get_parameter("annotate").get_parameter_value().bool_value
+        self.pub_return = self.get_parameter("pub_return").get_parameter_value().bool_value
         self.debug_time = self.get_parameter("debug_time").get_parameter_value().bool_value
         self.draw = self.annotate
         self.finish_time = float(self.get_parameter("finish_time").get_parameter_value().double_value)
@@ -882,7 +884,8 @@ class RFDetrNode(Node):
                         self.track_stable_start = None
                         self.contour_yes = self.contour_no = 0
         elif self.state == State.FINISH:
-            self.publish_homepose()
+            if self.pub_return:
+                self.publish_homepose()
             if object_detected_stable:
                 self.set_navigation_pause(False)
                 self.get_logger().info("STATE → DETECT (object detected during FINISH)")
