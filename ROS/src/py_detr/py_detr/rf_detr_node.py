@@ -1003,12 +1003,12 @@ class RFDetrNode(Node):
         #     return
         if self.pitch_dir_up:
             if self.pitch_angle <= self.pitch_max:
-                self.pitch_angle += 3
+                self.pitch_angle += 1
             else:
                 self.pitch_dir_up = False
         else:
             if self.pitch_angle >= self.pitch_min:
-                self.pitch_angle -= 3
+                self.pitch_angle -= 1
             else:
                 self.pitch_dir_up = True
 
