@@ -283,7 +283,7 @@ class RFDetrNode(Node):
         self.declare_parameter("search_bbox_margin", 0.1)
         self.declare_parameter("depth_threshold", 600.0)
         self.declare_parameter("bag_path", "")
-        self.declare_parameter("frame_rate", 10.0)
+        self.declare_parameter("frame_rate", 20.0)
         self.declare_parameter("finish_time", 2.0)
         self.declare_parameter("annotate", False)
         self.declare_parameter("debug_time", False)
@@ -802,7 +802,7 @@ class RFDetrNode(Node):
                 self.contour_yes = self.contour_no = 0
 
             # Contour confirmed AND object lost → go to TRACK
-            elif contour_found_stable and object_lost_stable and self.pitch_angle > 60.0 :
+            elif contour_found_stable and object_lost_stable and self.pitch_angle > 75.0 :
                 self.get_logger().info("STATE → TRACK (contour confirmed)")
                 self.state = State.TRACK
                 self.contour_no = 0
