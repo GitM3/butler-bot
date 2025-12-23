@@ -869,6 +869,8 @@ class RFDetrNode(Node):
                     filtered_bbox = self._correct_kalman_filter(measured_bbox, depth_image.shape)
                     if filtered_bbox is not None:
                         mask_bbox_draw = filtered_bbox
+                    cont_depth = contour_info["depth"]
+                    self.finish_quick(cont_depth)
                 else:
                     self.contour_no += 1
                     self.contour_yes = 0
