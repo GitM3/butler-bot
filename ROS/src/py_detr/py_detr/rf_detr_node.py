@@ -812,7 +812,7 @@ class RFDetrNode(Node):
                 self.contour_yes = self.contour_no = 0
 
             # Contour confirmed AND object lost → go to TRACK
-            elif contour_found_stable and object_lost_stable and self.pitch_angle > 60.0 :
+            elif contour_found_stable and self.pitch_angle > 70.0 :
                 self.get_logger().info("STATE → TRACK (contour confirmed)")
                 self.state = State.TRACK
                 self.contour_no = 0
@@ -1006,7 +1006,7 @@ class RFDetrNode(Node):
 
 
     def finish_quick(self,depth):
-        if self.pitch_angle > 80 and (depth is not None) and depth <= 100:
+        if self.pitch_angle > 80 and (depth is not None) and depth <= 200:
             self.get_logger().info("STATE → FINISH (assume arrived)")
             self.state = State.FINISH
             return True
