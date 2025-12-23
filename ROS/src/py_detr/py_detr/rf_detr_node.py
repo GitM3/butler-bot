@@ -880,14 +880,14 @@ class RFDetrNode(Node):
                     if (time.time() - self.track_stable_start) >= self.finish_time:
                         self.get_logger().info(f"STATE → FINISH (contour stable > {self.finish_time})")
                         self.state = State.FINISH
-                        self.set_navigation_pause(True)
+                        #self.set_navigation_pause(True)
                         self.track_stable_start = None
                         self.contour_yes = self.contour_no = 0
         elif self.state == State.FINISH:
             if self.pub_return:
                 self.publish_homepose()
             if object_detected_stable:
-                self.set_navigation_pause(False)
+                #self.set_navigation_pause(False)
                 self.get_logger().info("STATE → DETECT (object detected during FINISH)")
                 self.state = State.DETECT
                 self.reset_kalman_filter()
