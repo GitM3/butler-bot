@@ -815,7 +815,7 @@ class RFDetrNode(Node):
         # =====================================================
         elif self.state == State.TRACK:
 
-            if object_detected_stable 
+            if object_detected_stable:
                 if self.pitch_angle < 65:
                     self.get_logger().info("STATE → DETECT (object back in view)")
                     self.state = State.DETECT
@@ -991,7 +991,7 @@ class RFDetrNode(Node):
         self.tf_broadcaster.sendTransform(t)
 
     def finish_quick(self,depth):
-        if self.pitch_angle > 80 and (depth is not None) and depth <= 0.3:
+        if self.pitch_angle > 80 and (depth is not None) and depth <= 0.2:
             self.get_logger().info("STATE → FINISH (assume arrived)")
             self.state = State.FINISH
             return True
