@@ -256,7 +256,7 @@ class RFDetrNode(Node):
         self.kf_last_time = None
         self.kf_bbox = None
         # Control parameters
-        self.pitch_min = 0.0
+        self.pitch_min = 10.0
         self.pitch_max = 90.0
         self.pitch_angle = 30.0
         self.pitch_angle_prev = 0.0
@@ -287,7 +287,7 @@ class RFDetrNode(Node):
         self.declare_parameter("finish_time", 2.0)
         self.declare_parameter("annotate", False)
         self.declare_parameter("debug_time", False)
-        self.declare_parameter("pitch_step", 15.0 )
+        self.declare_parameter("pitch_step", 25.0 )
 
 
         self.annotate = self.get_parameter("annotate").get_parameter_value().bool_value
@@ -349,7 +349,6 @@ class RFDetrNode(Node):
         # self.spatial_filter.set_option(rs.option.holes_fill, 0)
         # self.temporal_filter.set_option(rs.option.filter_smooth_alpha, 0.4)
         # self.temporal_filter.set_option(rs.option.filter_smooth_delta, 20)
-
         self.get_logger().info("✅ BB Detector ready")
 
     def save_homepoint_callback(self, request, response):
@@ -814,7 +813,7 @@ class RFDetrNode(Node):
         # =====================================================
         elif self.state == State.TRACK:
 
-            if object_detected_stable:
+            if object_detected_stable and self.pitch_angle < 65:
                 self.get_logger().info("STATE → DETECT (object back in view)")
                 self.state = State.DETECT
                 self.reset_kalman_filter()
