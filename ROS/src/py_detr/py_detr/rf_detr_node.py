@@ -670,7 +670,16 @@ class RFDetrNode(Node):
         M = cv2.moments(contour)
         if M["m00"] == 0:
             return None
+        contour_mask = np.zeros_like(search_mask, dtype=np.uint8)
+        cv2.drawContours(contour_mask, [contour], -1, 255, thickness=cv2.FILLED)
 
+        depth_values = depth_mask[contour_mask > 0]
+        depth_values = depth_values[depth_values > 0]
+
+        if depth_values.size == 0:
+            return None
+
+        depth_mean = float(np.mean(depth_values))
         cx_local = int(M["m10"] / M["m00"])
         cy_local = int(M["m01"] / M["m00"])
 
@@ -684,6 +693,7 @@ class RFDetrNode(Node):
             "center": (cx, cy),
             "contour": contour,
             "mask": search_mask,
+            "depth": depth_mean,
         }
 
     def callback(self):
