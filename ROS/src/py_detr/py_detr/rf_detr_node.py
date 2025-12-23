@@ -281,7 +281,7 @@ class RFDetrNode(Node):
         self.declare_parameter("depth_min_contour_area", 500.0)
         self.declare_parameter("track_window_px", 120.0)
         self.declare_parameter("search_bbox_margin", 0.1)
-        self.declare_parameter("depth_threshold", 600.0)
+        self.declare_parameter("depth_threshold", 400.0)
         self.declare_parameter("bag_path", "")
         self.declare_parameter("frame_rate", 20.0)
         self.declare_parameter("finish_time", 2.0)
@@ -802,7 +802,7 @@ class RFDetrNode(Node):
                 self.contour_yes = self.contour_no = 0
 
             # Contour confirmed AND object lost → go to TRACK
-            elif contour_found_stable and object_lost_stable and self.pitch_angle > 75.0 :
+            elif contour_found_stable and object_lost_stable and self.pitch_angle > 60.0 :
                 self.get_logger().info("STATE → TRACK (contour confirmed)")
                 self.state = State.TRACK
                 self.contour_no = 0
@@ -991,7 +991,7 @@ class RFDetrNode(Node):
         self.tf_broadcaster.sendTransform(t)
 
     def finish_quick(self,depth):
-        if self.pitch_angle > 80 and (depth is not None) and depth <= 0.2:
+        if self.pitch_angle > 80 and (depth is not None) and depth <= 200:
             self.get_logger().info("STATE → FINISH (assume arrived)")
             self.state = State.FINISH
             return True
