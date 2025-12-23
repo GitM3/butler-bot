@@ -975,23 +975,27 @@ class RFDetrNode(Node):
                 )
 
     def publish_homepose(self):
-        tf_cam_to_home = self.tf_buffer.lookup_transform(self.camera_optical_frame,
-                                                         'home_point',
-                                                         rclpy.time.Time())
-        self.get_logger().info(
-            "Pub home")
-        t = TransformStamped()
-        t.header.stamp = self.get_clock().now().to_msg()
-        t.header.frame_id = self.camera_optical_frame
-        t.child_frame_id = self.target_frame
+        try:
+            tf_cam_to_home = self.tf_buffer.lookup_transform(self.camera_optical_frame,
+                                                             'home_point',
+                                                             rclpy.time.Time())
+            self.get_logger().info(
+                "Pub home")
+            t = TransformStamped()
+            t.header.stamp = self.get_clock().now().to_msg()
+            t.header.frame_id = self.camera_optical_frame
+            t.child_frame_id = self.target_frame
 
-        t.transform.translation = tf_cam_to_home.transform.translation
-        t.transform.rotation = tf_cam_to_home.transform.rotation
+            t.transform.translation = tf_cam_to_home.transform.translation
+            t.transform.rotation = tf_cam_to_home.transform.rotation
 
-        self.tf_broadcaster.sendTransform(t)
+            self.tf_broadcaster.sendTransform(t)
+        except TransformException as ex:
+            self.get_logger().warn(f"TF lookup failed: {ex}")
+
 
     def finish_quick(self,depth):
-        if self.pitch_angle > 80 and (depth is not None) and depth <= 200:
+        if self.pitch_angle > 80 and (depth is not None) and depth <= 100:
             self.get_logger().info("STATE → FINISH (assume arrived)")
             self.state = State.FINISH
             return True
