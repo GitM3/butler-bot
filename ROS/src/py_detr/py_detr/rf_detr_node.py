@@ -274,7 +274,7 @@ class RFDetrNode(Node):
         self.publish_static_camera_optical_tf()
 
         # Depth contour tuning
-        self.declare_parameter("depth_mask_threshold_mm", 700.0)
+        self.declare_parameter("depth_mask_threshold_mm", 100.0)
         self.declare_parameter("depth_mask_margin_mm", 20.0)
         self.declare_parameter("depth_mask_percentile", 2.0)
         self.declare_parameter("depth_kernel_size", 9)
@@ -287,7 +287,7 @@ class RFDetrNode(Node):
         self.declare_parameter("finish_time", 2.0)
         self.declare_parameter("annotate", False)
         self.declare_parameter("debug_time", False)
-        self.declare_parameter("pitch_step", 25.0 )
+        self.declare_parameter("pitch_step", 15.0 )
 
 
         self.annotate = self.get_parameter("annotate").get_parameter_value().bool_value
@@ -349,52 +349,60 @@ class RFDetrNode(Node):
         # self.spatial_filter.set_option(rs.option.holes_fill, 0)
         # self.temporal_filter.set_option(rs.option.filter_smooth_alpha, 0.4)
         # self.temporal_filter.set_option(rs.option.filter_smooth_delta, 20)
+        try:
+            self.save_homepoint()
+            self.get_logger().info(
+                f"Home point saved in {self.global_frame}: "
+                f"({self.home_pose['x']:.3f}, {self.home_pose['y']:.3f}, {self.home_pose['z']:.3f})"
+            )
+        except TransformException as ex:
+            self.get_logger().warn(f"TF lookup failed: {ex}")
         self.get_logger().info("✅ BB Detector ready")
 
     def save_homepoint_callback(self, request, response):
         response.success = True
         response.message = 'Home point saved'
         try:
-            tf = self.tf_buffer.lookup_transform(
-                self.global_frame,
-                self.camera_optical_frame,
-                rclpy.time.Time()
-            )
-
-            self.home_pose = {
-                'x': tf.transform.translation.x,
-                'y': tf.transform.translation.y,
-                'z': tf.transform.translation.z,
-                'qx': tf.transform.rotation.x,
-                'qy': tf.transform.rotation.y,
-                'qz': tf.transform.rotation.z,
-                'qw': tf.transform.rotation.w,
-            }
-            self.home_tf = TransformStamped()
-            self.home_tf.header.frame_id = self.global_frame
-            self.home_tf.child_frame_id = 'home_point'
-
-            self.home_tf.transform.translation.x = self.home_pose['x']
-            self.home_tf.transform.translation.y = self.home_pose['y']
-            self.home_tf.transform.translation.z = self.home_pose['z']
-            self.home_tf.transform.rotation.x = self.home_pose['qx']
-            self.home_tf.transform.rotation.y = self.home_pose['qy']
-            self.home_tf.transform.rotation.z = self.home_pose['qz']
-            self.home_tf.transform.rotation.w = self.home_pose['qw']
-
+            self.save_homepoint()
             self.get_logger().info(
                 f"Home point saved in {self.global_frame}: "
                 f"({self.home_pose['x']:.3f}, {self.home_pose['y']:.3f}, {self.home_pose['z']:.3f})"
             )
-            self.home_tf.header.stamp = rclpy.time.Time().to_msg()  
-            self.static_tf_broadcaster.sendTransform(self.home_tf)
-
-
         except TransformException as ex:
             self.get_logger().warn(f"TF lookup failed: {ex}")
             response.success = False
             response.message = 'TF lookup failed'
         return response
+
+    def save_homepoint(self):
+        tf = self.tf_buffer.lookup_transform(
+            self.global_frame,
+            self.camera_optical_frame,
+            rclpy.time.Time()
+        )
+
+        self.home_pose = {
+            'x': tf.transform.translation.x,
+            'y': tf.transform.translation.y,
+            'z': tf.transform.translation.z,
+            'qx': tf.transform.rotation.x,
+            'qy': tf.transform.rotation.y,
+            'qz': tf.transform.rotation.z,
+            'qw': tf.transform.rotation.w,
+        }
+        self.home_tf = TransformStamped()
+        self.home_tf.header.frame_id = self.global_frame
+        self.home_tf.child_frame_id = 'home_point'
+
+        self.home_tf.transform.translation.x = self.home_pose['x']
+        self.home_tf.transform.translation.y = self.home_pose['y']
+        self.home_tf.transform.translation.z = self.home_pose['z']
+        self.home_tf.transform.rotation.x = self.home_pose['qx']
+        self.home_tf.transform.rotation.y = self.home_pose['qy']
+        self.home_tf.transform.rotation.z = self.home_pose['qz']
+        self.home_tf.transform.rotation.w = self.home_pose['qw']
+        self.home_tf.header.stamp = rclpy.time.Time().to_msg()  
+        self.static_tf_broadcaster.sendTransform(self.home_tf)
 
     def set_navigation_pause(self, pause: bool):
             request = SetBool.Request()
